@@ -1,0 +1,23 @@
+[package]
+name = "speng-radium"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+# This is the library loaded by SpaceEngine when patched
+[lib]
+name = "rloader"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+# Better performance with color-eyre
+[profile.dev.package.backtrace]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+
+[dependencies]
+once_cell = "1.17.1"
+serde = { version = "1.0.152", features = ["derive"] }

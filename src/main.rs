@@ -1,0 +1,3 @@
+mod serde;
+
+fn main() {}
