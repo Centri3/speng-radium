@@ -53,7 +53,6 @@ warn = [
     "clippy::manual_instant_elapsed",
     "clippy::manual_ok_or",
     "clippy::manual_string_new",
-    "clippy::map_err_ignore",
     "clippy::map_flatten",
     "clippy::map_unwrap_or",
     "clippy::match_on_vec_items",

@@ -1,6 +1,6 @@
 //! # Overview
 //!
-//! Contains serde definitions for remote types, allowing implementations of
+//! Contains [`serde`] definitions for remote types, allowing implementations of
 //! [`Serialize`]/[`Deserialize`] where they otherwise aren't implemented.
 //!
 //! # Structure
@@ -20,7 +20,7 @@
 // False positives. Seemingly can't disable this for individual types, sadly.
 #![allow(clippy::trait_duplication_in_bounds)]
 
-// These are for docs. They are not to be used.
+// These are for docs, they are not to be used.
 #[allow(unused_imports)]
 use once_cell::sync;
 #[allow(unused_imports)]
