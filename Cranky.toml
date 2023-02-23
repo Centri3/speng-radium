@@ -74,7 +74,6 @@ warn = [
     "clippy::negative_feature_names",
     "clippy::nonstandard_macro_braces",
     "clippy::option_option",
-    "clippy::panic_in_result_fn",
     "clippy::path_buf_push_overwrite",
     "clippy::ptr_as_ptr",
     "clippy::rc_mutex",
