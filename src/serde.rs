@@ -1,14 +1,30 @@
-#![allow(clippy::trait_duplication_in_bounds)]
-
 //! # Overview
 //!
 //! Contains serde definitions for remote types, allowing implementations of
 //! [`Serialize`]/[`Deserialize`] where they otherwise aren't implemented.
 //!
-//! # Current Implementations
+//! # Structure
+//!
+//! The structure of modules here is the same as the crates it provides
+//! definitions for; in other words, [`once_cell::sync::OnceCell`] becomes
+//! [`__once_cell::__sync::__OnceCell`]. This is to keep this module orderly,
+//! rather than putting every definition at the root like a free for all (if
+//! this was done, items like [`unsync::OnceCell`] and
+//! [`sync::OnceCell`] would clash).
+//!
+//! # Current Definitions
 //!
 //! ## [`once_cell`]
-//! - `sync::OnceCell`
+//! - [`sync::OnceCell`]
+
+// False positives. Seemingly can't disable this for individual types, sadly.
+#![allow(clippy::trait_duplication_in_bounds)]
+
+// These are for docs. They are not to be used.
+#[allow(unused_imports)]
+use once_cell::sync;
+#[allow(unused_imports)]
+use once_cell::unsync;
 
 use once_cell::sync::OnceCell;
 use serde::Deserialize;
