@@ -13,7 +13,7 @@ pub static EXE: Exe = Exe::__define();
 /// Abstraction over handling reading/writing to a file or running program.
 /// Allows any type implementing [`ExeHandler`]. Should only be initialized
 /// once. Also see [`EXE`].
-// #[repr(transparent)]
+#[repr(transparent)]
 pub struct Exe {
     inner: OnceCell<Inner>,
 }
