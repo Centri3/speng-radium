@@ -14,6 +14,9 @@ extern crate tracing;
 mod exe;
 mod logging;
 mod serde;
+mod utils;
+
+check_target!();
 
 fn main() {
     let _guard = setup_logging().expect("Failed to setup logging");
@@ -21,4 +24,3 @@ fn main() {
     EXE.init(HandlerB).unwrap();
     EXE.say_hi();
 }
-

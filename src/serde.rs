@@ -37,7 +37,7 @@ pub mod __once_cell {
         use super::super::*;
 
         /// Definition for [`once_cell::sync::OnceCell`]. `T` must implement
-        /// `Serialize`. Will dead-lock if serialized while uninitialized!
+        /// [`Serialize`]. Will dead-lock if serialized while uninitialized!
         #[derive(Deserialize, Serialize)]
         #[serde(remote = "OnceCell")]
         pub struct __OnceCell<T: Serialize + 'static>(#[serde(getter = "OnceCell::wait")] T);
