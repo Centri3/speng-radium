@@ -109,9 +109,9 @@ impl<H: ExeHandler> Exe<H> {
 
     /// Convenience function to call `write` on the provided [`ExeHandler`]
     ///
-    /// If you need a more specialized function provided by a handler, then call
-    /// `reader` or `writer` to get read/write access to your handler. You can
-    /// then call said function.
+    /// If you need a more specialized function provided by a handler,
+    /// then call `reader` or `writer` to get read/write access to your
+    /// handler. You can then call said function.
     pub unsafe fn write(&self, index: usize, value: u8) -> Result<u8> {
         self.writer().write(index, value)
     }
