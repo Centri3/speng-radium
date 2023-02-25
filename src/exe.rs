@@ -1,58 +1,46 @@
-//! TODO: Just see [`EXE`] and [`Exe`] for now.
-
-use std::fmt;
-use std::ops::Range;
-use std::ops::RangeBounds;
-use std::slice::SliceIndex;
+//! TODO: Just see [`exe`] and [`Exe`] for now.
 
 use crate::utils::short_type_name;
+use bytemuck::Pod;
 use eyre::Result;
-use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
+use std::slice::SliceIndex;
 
-/// Global variable for [`Exe`]. Can be initialized by calling `EXE.init()`
-pub static EXE: Exe<HandlerA> = Exe::__define();
+/// TODO: TBD
+pub fn exe<H: ExeHandler>(handler: H) -> Exe<H> {
+    Exe::new(handler)
+}
 
 /// Abstraction over handling reading/writing to a file or running program.
 /// Allows any type implementing [`ExeHandler`]. Should only be initialized
 /// once. Also see [`EXE`].
-pub struct Exe<E: ExeHandler>(OnceCell<RwLock<E>>);
+pub struct Exe<H: ExeHandler>(RwLock<H>);
 
-impl<E: ExeHandler> Exe<E> {
-    /// Internal function to define [`EXE`].
+impl<H: ExeHandler> Exe<H> {
+    /// Construct [`Exe`]. Also see [`exe`].
     #[inline]
-    const fn __define() -> Self {
-        Self(OnceCell::new())
-    }
+    #[instrument(skip(handler), fields(H = short_type_name::<H>()))]
+    pub fn new(handler: H) -> Self {
+        info!("Creating an `Exe`");
 
-    /// Internal function to reduce code repetition. Gets `EXE.handler`, and
-    /// panics if it's uninitialized.
-    #[inline]
-    fn __inner(&self) -> &RwLock<E> {
-        self.0.get().expect("`EXE` was uninitialized!")
-    }
-
-    /// Initialize [`EXE`] with `handler`. `handler` must be an [`ExeHandler`].
-    /// Don't call this twice (at least successfully).
-    #[inline]
-    #[instrument(skip(self, handler), fields(H = short_type_name::<H>()))]
-    pub fn init<H: ExeHandler + Send + Sync + 'static>(&self, handler: H) -> Result<()> {
-        info!("Initializing `EXE`");
-
-        // self.0
-        //     .set(Box::new(RwLock::new(handler)))
-        //     .map_err(|_| eyre!("`EXE` was already initialized!"))?;
-
-        Ok(())
+        Self(RwLock::new(handler))
     }
 }
 
-pub struct HandlerA;
-
-impl ExeHandler for HandlerA {}
-
 pub trait ExeHandler {
-    // fn read(&self, index: usize) -> Result<u8>;
+    fn read(&self, index: usize) -> Result<u8>;
 
-    // fn read_many(&self, range: Range<usize>) -> Result<Vec<u8>>;
+    fn read_many<R>(&self, range: R) -> Result<Vec<u8>>
+    where
+        R: SliceIndex<[u8], Output = [u8]>;
+
+    fn read_to<P: Pod>(&self, index: usize) -> Result<P>;
+
+    unsafe fn write(&self, index: usize, value: u8) -> Result<u8>;
+
+    unsafe fn write_many<R>(&self, range: R, value: &[u8]) -> Result<Vec<u8>>
+    where
+        R: SliceIndex<[u8], Output = [u8]>;
+
+    unsafe fn write_to<P: Pod>(&self, index: usize, value: P) -> Result<P>;
 }

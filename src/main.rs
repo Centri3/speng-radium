@@ -12,6 +12,8 @@ mod serde;
 mod utils;
 use logging::setup_logging;
 
+use exe::exe;
+
 check_target!();
 
 fn main() {
