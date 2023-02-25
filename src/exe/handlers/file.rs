@@ -1,3 +1,5 @@
+//! TODO:
+
 use crate::exe::ExeHandler;
 use eyre::eyre;
 use eyre::Result;
@@ -5,9 +7,7 @@ use std::fmt::Debug;
 use std::fs;
 use std::mem::replace;
 use std::slice::SliceIndex;
-use tracing::info;
 use tracing::instrument;
-use tracing::trace;
 
 #[derive(Debug)]
 pub struct FileHandler(Vec<u8>);
