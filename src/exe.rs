@@ -22,7 +22,8 @@ pub fn exe<H: ExeHandler>(handler: H) -> Exe<H> {
 /// Abstraction over handling reading/writing to a file or running program.
 /// Allows any type implementing [`ExeHandler`]. Should only be initialized
 /// once. Also see [`EXE`].
-pub struct Exe<H: ExeHandler>(RwLock<H>);
+#[derive(Debug)]
+pub struct Exe<H: ExeHandler>(pub RwLock<H>);
 
 impl<H: ExeHandler> Exe<H> {
     /// Construct [`Exe`]. Also see [`exe`].
