@@ -55,13 +55,13 @@ pub trait ExeHandler {
         todo!();
     }
 
-    unsafe fn write(&self, index: usize, value: u8) -> Result<u8>;
+    unsafe fn write(&mut self, index: usize, value: u8) -> Result<u8>;
 
-    unsafe fn write_many(&self, index: usize, value: &[u8]) -> Result<Vec<u8>>;
+    unsafe fn write_many(&mut self, index: usize, value: &[u8]) -> Result<Vec<u8>>;
 
     #[inline]
     #[instrument(skip(self))]
-    unsafe fn write_to<P: Debug + Pod>(&self, index: usize, value: P) -> Result<P> {
+    unsafe fn write_to<P: Debug + Pod>(&mut self, index: usize, value: P) -> Result<P> {
         self.write_many(index, bytes_of(&value))
             .map(|b| *from_bytes(&b))
     }

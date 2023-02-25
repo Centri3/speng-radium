@@ -2,6 +2,7 @@ use crate::exe::ExeHandler;
 use eyre::eyre;
 use eyre::Result;
 use std::fmt::Debug;
+use std::mem::replace;
 use std::slice::SliceIndex;
 use tracing::instrument;
 use tracing::trace;
@@ -39,13 +40,21 @@ impl ExeHandler for FileHandler {
 
     #[inline]
     #[instrument(skip(self), fields(len = self.len()))]
-    unsafe fn write(&self, index: usize, value: u8) -> Result<u8> {
-        todo!()
+    unsafe fn write(&mut self, index: usize, value: u8) -> Result<u8> {
+        Ok(replace(
+            self.0
+                .get_mut(index)
+                .ok_or_else(|| eyre!("Index out of bounds"))?,
+            value,
+        ))
     }
 
     #[inline]
     #[instrument(skip(self), fields(len = self.len()))]
-    unsafe fn write_many(&self, index: usize, value: &[u8]) -> Result<Vec<u8>> {
-        todo!()
+    unsafe fn write_many(&mut self, index: usize, value: &[u8]) -> Result<Vec<u8>> {
+        Ok(self
+            .0
+            .splice(index..index + value.len(), value.to_vec())
+            .collect())
     }
 }
