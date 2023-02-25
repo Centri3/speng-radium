@@ -5,8 +5,11 @@ use eyre::eyre;
 use eyre::Result;
 use std::fmt::Debug;
 use std::fs;
+use std::fs::File;
+use std::io::Write;
 use std::mem::replace;
 use std::slice::SliceIndex;
+use tracing::info;
 use tracing::instrument;
 
 #[derive(Debug)]
@@ -16,7 +19,17 @@ impl FileHandler {
     #[inline]
     #[instrument]
     pub fn new(path: impl AsRef<str> + Debug) -> Result<Self> {
+        info!("Creating `FileHandler`");
+
         Ok(Self(fs::read(path.as_ref())?))
+    }
+
+    #[inline]
+    #[instrument(skip(self))]
+    pub fn commit(&self, path: impl AsRef<str> + Debug) -> Result<()> {
+        info!("Saving `Exe`");
+
+        Ok(File::create(path.as_ref())?.write_all(&self.0)?)
     }
 }
 

@@ -11,6 +11,7 @@ use eyre::Result;
 use parking_lot::RwLock;
 use parking_lot::RwLockReadGuard;
 use parking_lot::RwLockWriteGuard;
+use tracing::info;
 use std::ffi::CString;
 use std::fmt::Debug;
 use std::mem::size_of;
@@ -18,8 +19,7 @@ use std::slice::SliceIndex;
 use tracing::instrument;
 
 // TODO: Docs.
-#[inline]
-#[instrument(skip(handler), fields(H = short_type_name::<H>()))]
+#[inline(always)]
 pub fn exe<H: ExeHandler>(handler: H) -> Exe<H> {
     Exe::new(handler)
 }
@@ -29,10 +29,12 @@ pub fn exe<H: ExeHandler>(handler: H) -> Exe<H> {
 pub struct Exe<H: ExeHandler>(RwLock<H>);
 
 impl<H: ExeHandler> Exe<H> {
-    /// Construct [`Exe`]. Also see [`exe`].
+    /// Create an [`Exe`]. Also see [`exe`].
     #[inline]
     #[instrument(skip(handler), fields(H = short_type_name::<H>()))]
     pub fn new(handler: H) -> Self {
+        info!("Creating `Exe`");
+
         Self(RwLock::new(handler))
     }
 
