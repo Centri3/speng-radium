@@ -24,6 +24,7 @@ impl ExeHandler for FileHandler {
     #[inline]
     #[instrument(skip(self), fields(len = self.0.len()))]
     fn read(&self, index: usize) -> Result<u8> {
+        // This is a faster implementation of this
         self.0
             .get(index)
             .copied()
@@ -45,6 +46,7 @@ impl ExeHandler for FileHandler {
     #[inline]
     #[instrument(skip(self), fields(len = self.0.len()))]
     unsafe fn write(&mut self, index: usize, value: u8) -> Result<u8> {
+        // This is a faster implementation of this
         Ok(replace(
             self.0
                 .get_mut(index)

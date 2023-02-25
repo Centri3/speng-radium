@@ -16,6 +16,4 @@ fn main() {
     let _guard = setup_logging().expect("Failed to setup logging");
 
     let exe = exe(FileHandler::new("SpaceEngine.exe").unwrap());
-
-    tracing::info!("{:x?}", exe.0.read().read_to::<u32>(0x2780009000).unwrap());
 }
