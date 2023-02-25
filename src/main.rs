@@ -1,11 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#[macro_use]
-extern crate eyre;
-
-#[macro_use]
-extern crate tracing;
-
 mod exe;
 mod logging;
 mod serde;

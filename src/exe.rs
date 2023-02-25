@@ -1,12 +1,20 @@
 //! TODO: Just see [`exe`] and [`Exe`] for now.
 
+pub mod handlers;
+
 use crate::utils::short_type_name;
+use bytemuck::bytes_of;
+use bytemuck::from_bytes;
 use bytemuck::Pod;
+use eyre::eyre;
 use eyre::Result;
 use parking_lot::RwLock;
+use std::fmt::Debug;
+use std::mem::size_of;
 use std::slice::SliceIndex;
+use tracing::instrument;
+use tracing::trace;
 
-/// TODO: TBD
 pub fn exe<H: ExeHandler>(handler: H) -> Exe<H> {
     Exe::new(handler)
 }
@@ -21,8 +29,7 @@ impl<H: ExeHandler> Exe<H> {
     #[inline]
     #[instrument(skip(handler), fields(H = short_type_name::<H>()))]
     pub fn new(handler: H) -> Self {
-        info!("Creating an `Exe`");
-
+        // TODO: Log stuff here
         Self(RwLock::new(handler))
     }
 }
@@ -32,15 +39,30 @@ pub trait ExeHandler {
 
     fn read_many<R>(&self, range: R) -> Result<Vec<u8>>
     where
-        R: SliceIndex<[u8], Output = [u8]>;
+        R: Debug + SliceIndex<[u8], Output = [u8]>;
 
-    fn read_to<P: Pod>(&self, index: usize) -> Result<P>;
+    #[inline]
+    #[instrument(skip(self), fields(P = short_type_name::<P>()))]
+    fn read_to<P: Pod>(&self, index: usize) -> Result<P> {
+        self.read_many(index..index + size_of::<P>())
+            .map(|b| *from_bytes(&b))
+    }
+
+    #[inline]
+    #[instrument(skip(self))]
+    fn read_to_string(&self, index: usize, size: Option<usize>) -> Result<String> {
+        // TODO: We want this to be automatically implemented
+        todo!();
+    }
 
     unsafe fn write(&self, index: usize, value: u8) -> Result<u8>;
 
-    unsafe fn write_many<R>(&self, range: R, value: &[u8]) -> Result<Vec<u8>>
-    where
-        R: SliceIndex<[u8], Output = [u8]>;
+    unsafe fn write_many(&self, index: usize, value: &[u8]) -> Result<Vec<u8>>;
 
-    unsafe fn write_to<P: Pod>(&self, index: usize, value: P) -> Result<P>;
+    #[inline]
+    #[instrument(skip(self))]
+    unsafe fn write_to<P: Debug + Pod>(&self, index: usize, value: P) -> Result<P> {
+        self.write_many(index, bytes_of(&value))
+            .map(|b| *from_bytes(&b))
+    }
 }

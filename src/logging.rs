@@ -7,6 +7,8 @@ use std::env;
 use std::fs;
 use std::io;
 use std::panic;
+use tracing::error;
+use tracing::trace;
 use tracing_appender::non_blocking::NonBlocking;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::never;
