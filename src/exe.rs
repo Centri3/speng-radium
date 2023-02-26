@@ -1,21 +1,28 @@
 //! TODO: Just see [`exe`] and [`Exe`] for now.
 
 pub mod handlers;
+pub mod headers;
 
+use self::headers::NtDirectory;
+use self::headers::NtDirectoryEntry;
+use self::headers::NtImage;
+use self::headers::NtImageSections;
+use self::headers::NtOptional;
 use crate::utils::short_type_name;
 use bytemuck::bytes_of;
 use bytemuck::from_bytes;
 use bytemuck::Pod;
 use eyre::eyre;
 use eyre::Result;
+use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
 use parking_lot::RwLockReadGuard;
 use parking_lot::RwLockWriteGuard;
-use tracing::info;
 use std::ffi::CString;
 use std::fmt::Debug;
 use std::mem::size_of;
 use std::slice::SliceIndex;
+use tracing::info;
 use tracing::instrument;
 
 // TODO: Docs.
@@ -125,7 +132,7 @@ impl<H: ExeHandler> Exe<H> {
     /// handler. You can then call said function.
     #[inline]
     #[instrument(skip(self))]
-    pub unsafe fn write(&self, index: usize, value: u8) -> Result<u8> {
+    pub unsafe fn write(&mut self, index: usize, value: u8) -> Result<u8> {
         self.writer().write(index, value)
     }
 
@@ -136,7 +143,7 @@ impl<H: ExeHandler> Exe<H> {
     /// then call said function.
     #[inline]
     #[instrument(skip(self))]
-    pub unsafe fn write_many(&self, index: usize, value: &[u8]) -> Result<Vec<u8>> {
+    pub unsafe fn write_many(&mut self, index: usize, value: &[u8]) -> Result<Vec<u8>> {
         self.writer().write_many(index, value)
     }
 
@@ -147,8 +154,32 @@ impl<H: ExeHandler> Exe<H> {
     /// then call said function.
     #[inline]
     #[instrument(skip(self), fields(P = short_type_name::<P>()))]
-    pub unsafe fn write_to<P: Debug + Pod>(&self, index: usize, value: P) -> Result<P> {
+    pub unsafe fn write_to<P: Debug + Pod>(&mut self, index: usize, value: P) -> Result<P> {
         self.writer().write_to(index, value)
+    }
+
+    pub fn headers(&self) -> Result<NtImage> {
+        static HEADERS: OnceCell<NtImage> = OnceCell::new();
+
+        info!("Getting `Exe`'s headers");
+
+        todo!();
+    }
+
+    pub fn __get_optional(&self) -> Result<NtOptional> {
+        todo!();
+    }
+
+    pub fn __get_directory(&self) -> Result<NtDirectory> {
+        todo!();
+    }
+
+    pub fn __get_directory_entry(&self) -> Result<NtDirectoryEntry> {
+        todo!();
+    }
+
+    pub fn __get_sections(&self) -> Result<NtImageSections> {
+        todo!();
     }
 }
 
@@ -178,21 +209,20 @@ pub trait ExeHandler {
             .map(|b| *from_bytes(&b))
     }
 
-    /// Read bytes at `index` and cast to a [`String`]. Will read until `NULL`
-    /// is found or it's read `size` number of bytes. Will return [`Err`] if
-    /// it's out of bounds or invalid UTF-8! Will also return [`Err`] if it
-    /// has `NULL` outside of trailing `NULL` bytes. Don't read UTF-16. This
-    /// function is implemented automatically.
+    /// Read bytes at `index` and cast to a [`String`]. The string has to be
+    /// `NULL` terminated and UTF-8! Will panic if it contains a `NULL` byte
+    /// (outside of trailing `NULL` bytes). This function is implemented
+    /// automatically.
     ///
     /// You should only specify a size ([`Some`]) if its size is known,
     /// otherwise you should use [`None`].
     #[inline]
     #[instrument(skip(self))]
     fn read_to_string(&self, index: usize, size: Option<usize>) -> Result<String> {
-        let bytes = size.map_or_else(
-            || self.__read_to_string_none(index),
-            |size| self.__read_to_string_some(index, size),
-        )?;
+        let bytes = match size {
+            Some(size) => self.__read_to_string_some(index, size),
+            None => self.__read_to_string_none(index),
+        }?;
 
         // We use [`CString`] here to return [`Err`] if it has `NULL`.
         Ok(CString::new(bytes.as_slice())?.to_str()?.to_string())
@@ -204,7 +234,11 @@ pub trait ExeHandler {
         let bytes = self.read_many(index..index + size)?;
 
         // Number of `NULL` bytes at the end of `bytes`
-        let num_of_nulls = bytes.rsplit(|&b| b != 0u8).next().unwrap().len();
+        let num_of_nulls = bytes
+            .rsplit(|&b| b != 0u8)
+            .next()
+            .expect("This is unreachable.")
+            .len();
 
         Ok(bytes[..bytes.len() - num_of_nulls].to_vec())
     }
@@ -214,11 +248,12 @@ pub trait ExeHandler {
     fn __read_to_string_none(&self, index: usize) -> Result<Vec<u8>> {
         // This is quite slow, as every call to `read_many` has to create a
         // [`Vec<u8>`]. It's not a big loss, though, only ~3ms here
+        // TODO: This is a stupid way of doing this
         Ok(self
             .read_many(index..)?
             .split(|&b| b == 0u8)
             .next()
-            .unwrap()
+            .expect("Same here.")
             .to_vec())
     }
 

@@ -1,5 +1,6 @@
 //! TODO:
 
+use crate::exe::headers::NtImage;
 use crate::exe::ExeHandler;
 use eyre::eyre;
 use eyre::Result;
@@ -12,6 +13,7 @@ use std::slice::SliceIndex;
 use tracing::info;
 use tracing::instrument;
 
+// TODO: This reads physical address currently, not virtual
 #[derive(Debug)]
 pub struct FileHandler(Vec<u8>);
 
@@ -22,6 +24,14 @@ impl FileHandler {
         info!("Creating `FileHandler`");
 
         Ok(Self(fs::read(path.as_ref())?))
+    }
+
+    #[inline]
+    #[instrument]
+    pub fn use_virtual(&mut self, headers: NtImage) -> Result<()> {
+        info!("Updating `FileHandler` to use virtual address instead");
+
+        todo!();
     }
 
     #[inline]
