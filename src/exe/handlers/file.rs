@@ -1,7 +1,6 @@
-//! TODO:
-
 use crate::exe::headers::NtImage;
 use crate::exe::ExeHandler;
+use crate::exe::ExeHandlerType;
 use eyre::eyre;
 use eyre::Result;
 use std::fmt::Debug;
@@ -25,15 +24,6 @@ impl FileHandler {
         Ok(Self(fs::read(path.as_ref())?))
     }
 
-    // TODO: YEAH
-    #[inline]
-    #[instrument(skip(self, headers))]
-    pub fn to_virtual(&mut self, headers: NtImage) -> Result<()> {
-        info!("Updating `FileHandler` to use virtual address instead");
-
-        todo!();
-    }
-
     #[inline]
     #[instrument(skip(self))]
     pub fn commit(&self, path: impl AsRef<str> + Debug) -> Result<()> {
@@ -44,6 +34,11 @@ impl FileHandler {
 }
 
 impl ExeHandler for FileHandler {
+    #[inline(always)]
+    fn handler_type(&self) -> ExeHandlerType {
+        ExeHandlerType::RawData
+    }
+
     #[inline]
     #[instrument(skip(self), fields(len = self.0.len()))]
     fn read(&self, index: usize) -> Result<u8> {
@@ -56,12 +51,13 @@ impl ExeHandler for FileHandler {
 
     #[inline]
     #[instrument(skip(self), fields(len = self.0.len()))]
-    fn read_many<R>(&self, range: R) -> Result<&[u8]>
+    fn read_many<R>(&self, range: R) -> Result<Vec<u8>>
     where
         R: Debug + SliceIndex<[u8], Output = [u8]>,
     {
         self.0
             .get(range)
+            .map(<[u8]>::to_vec)
             .ok_or_else(|| eyre!("Index out of bounds"))
     }
 
