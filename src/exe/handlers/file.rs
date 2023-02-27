@@ -13,7 +13,6 @@ use std::slice::SliceIndex;
 use tracing::info;
 use tracing::instrument;
 
-// TODO: This reads physical address currently, not virtual
 #[derive(Debug)]
 pub struct FileHandler(Vec<u8>);
 
@@ -26,9 +25,10 @@ impl FileHandler {
         Ok(Self(fs::read(path.as_ref())?))
     }
 
+    // TODO: YEAH
     #[inline]
-    #[instrument]
-    pub fn use_virtual(&mut self, headers: NtImage) -> Result<()> {
+    #[instrument(skip(self, headers))]
+    pub fn to_virtual(&mut self, headers: NtImage) -> Result<()> {
         info!("Updating `FileHandler` to use virtual address instead");
 
         todo!();
@@ -56,13 +56,12 @@ impl ExeHandler for FileHandler {
 
     #[inline]
     #[instrument(skip(self), fields(len = self.0.len()))]
-    fn read_many<R>(&self, range: R) -> Result<Vec<u8>>
+    fn read_many<R>(&self, range: R) -> Result<&[u8]>
     where
         R: Debug + SliceIndex<[u8], Output = [u8]>,
     {
         self.0
             .get(range)
-            .map(<[u8]>::to_vec)
             .ok_or_else(|| eyre!("Index out of bounds"))
     }
 

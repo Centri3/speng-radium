@@ -34,7 +34,7 @@ pub fn setup_logging() -> Result<WorkerGuard> {
     let (log_file, guard) = tracing_appender::non_blocking(never("", "radium.log"));
 
     __setup_tracing(log_file)?;
-
+    
     __setup_hooks()?;
 
     trace!("Logging successfully setup");

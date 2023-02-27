@@ -99,7 +99,8 @@ impl<H: ExeHandler> Exe<H> {
     where
         R: Debug + SliceIndex<[u8], Output = [u8]>,
     {
-        self.reader().read_many(range)
+        // I have to make it owned, sad...
+        self.reader().read_many(range).map(<[u8]>::to_vec)
     }
 
     /// Convenience function to call `read_to` on the provided [`ExeHandler`]
@@ -196,7 +197,7 @@ pub trait ExeHandler {
     }
 
     /// Get the bytes in `range`.
-    fn read_many<R>(&self, range: R) -> Result<Vec<u8>>
+    fn read_many<R>(&self, range: R) -> Result<&[u8]>
     where
         R: Debug + SliceIndex<[u8], Output = [u8]>;
 
@@ -206,7 +207,7 @@ pub trait ExeHandler {
     #[instrument(skip(self), fields(P = short_type_name::<P>()))]
     fn read_to<P: Pod>(&self, index: usize) -> Result<P> {
         self.read_many(index..index + size_of::<P>())
-            .map(|b| *from_bytes(&b))
+            .map(|b| *from_bytes(b))
     }
 
     /// Read bytes at `index` and cast to a [`String`]. The string has to be

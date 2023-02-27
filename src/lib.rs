@@ -1,3 +1,1 @@
-mod utils;
-
-check_target!();
+mod build;
