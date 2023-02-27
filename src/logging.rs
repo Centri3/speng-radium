@@ -40,12 +40,6 @@ pub fn setup_logging() -> Result<WorkerGuard> {
 
 #[inline(always)]
 fn __setup_tracing(log_file: NonBlocking) -> Result<()> {
-    // We want logs in release mode to be a little less verbose
-    #[cfg(debug_assertions)]
-    const ENV_FILTER: &str = "trace";
-    #[cfg(not(debug_assertions))]
-    const ENV_FILTER: &str = "debug";
-
     // FIXME: This writes to stdout even in release mode, where it isn't visible.
     // This should be fixed.
     let fmt_layer = fmt::layer()
@@ -54,7 +48,7 @@ fn __setup_tracing(log_file: NonBlocking) -> Result<()> {
 
     registry()
         .with(ErrorLayer::default())
-        .with(EnvFilter::try_new(ENV_FILTER)?)
+        .with(EnvFilter::try_new("debug")?)
         .with(fmt_layer)
         .init();
 
