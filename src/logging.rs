@@ -29,7 +29,7 @@ pub fn setup_logging() -> Result<WorkerGuard> {
     let (log_file, guard) = tracing_appender::non_blocking(never("", "radium.log"));
 
     __setup_tracing(log_file)?;
-    
+
     __setup_hooks()?;
 
     trace!("Logging successfully setup");
@@ -48,7 +48,7 @@ fn __setup_tracing(log_file: NonBlocking) -> Result<()> {
 
     registry()
         .with(ErrorLayer::default())
-        .with(EnvFilter::try_new("debug")?)
+        .with(EnvFilter::try_new("speng_radium")?)
         .with(fmt_layer)
         .init();
 
