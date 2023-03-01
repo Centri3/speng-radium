@@ -12,7 +12,6 @@ use tracing::info;
 use windows::s;
 use windows::w;
 use windows::Win32::Foundation::DBG_CONTINUE;
-use windows::Win32::Foundation::DBG_EXCEPTION_HANDLED;
 use windows::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
 use windows::Win32::Storage::FileSystem::FILE_NAME;
 use windows::Win32::System::Diagnostics::Debug::ContinueDebugEvent;
@@ -33,7 +32,9 @@ use windows::Win32::System::Threading::CreateRemoteThread;
 use windows::Win32::System::Threading::GetProcessId;
 use windows::Win32::System::Threading::GetThreadId;
 use windows::Win32::System::Threading::OpenProcess;
+use windows::Win32::System::Threading::OpenThread;
 use windows::Win32::System::Threading::PROCESS_ALL_ACCESS;
+use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
 
 fn main() {
     /*
@@ -41,13 +42,12 @@ fn main() {
         .unwrap();
     */
 
-    std::env::set_var("_NO_DEBUG_HEAP", "1");
-
     let _guard = setup_logging().expect("Failed to setup logging");
     let mut entry = 0usize;
 
     Command::new(Path::new("SpaceEngine.exe").canonicalize().unwrap())
         .creation_flags(0x1)
+        .env("_NO_DEBUG_HEAP", "1")
         .spawn()
         .unwrap();
 
@@ -159,7 +159,7 @@ fn main() {
                     None,
                 );
 
-                ContinueDebugEvent(event.dwProcessId, event.dwThreadId, DBG_EXCEPTION_HANDLED);
+                ContinueDebugEvent(event.dwProcessId, event.dwThreadId, DBG_CONTINUE);
 
                 DebugActiveProcessStop(event.dwProcessId);
 
