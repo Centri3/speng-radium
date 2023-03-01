@@ -41,6 +41,8 @@ fn main() {
         .unwrap();
     */
 
+    std::env::set_var("_NO_DEBUG_HEAP", "1");
+
     let _guard = setup_logging().expect("Failed to setup logging");
     let mut entry = 0usize;
 
