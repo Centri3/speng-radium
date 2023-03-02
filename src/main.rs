@@ -47,12 +47,10 @@ use windows::Win32::System::Memory::PAGE_READWRITE;
 use windows::Win32::System::Threading::CreateRemoteThread;
 use windows::Win32::System::Threading::GetProcessId;
 use windows::Win32::System::Threading::GetThreadId;
-use windows::Win32::System::Threading::OpenThread;
 use windows::Win32::System::Threading::SuspendThread;
 use windows::Win32::System::Threading::DEBUG_ONLY_THIS_PROCESS;
 use windows::Win32::System::Threading::DEBUG_PROCESS;
 use windows::Win32::System::Threading::DETACHED_PROCESS;
-use windows::Win32::System::Threading::THREAD_ALL_ACCESS;
 
 #[repr(align(16))]
 #[derive(Default)]
@@ -73,13 +71,6 @@ fn __start_modded_se() -> Result<()> {
 
     // TODO: Check if speng_radium.dll exists
     // TODO: Check if steam_appid.txt exists
-
-    // FIXME: Temporary solution
-    let path = if path.join("../../").clean().ends_with("system") {
-        "SpaceEngine.exe".into()
-    } else {
-        path
-    };
 
     Command::new(&path)
         // SpaceEngine/system/SpaceEngine.exe -> SpaceEngine/system
@@ -250,8 +241,7 @@ fn __get_exe_path() -> Result<PathBuf> {
         true => __exe_from_shortcut(),
         // Otherwise, get from the current working directory
         false => __exe_from_path(),
-    }?
-    .join("system\\SpaceEngine.exe");
+    }?;
 
     // Print the path we just obtained
     info!(?path, "Successfully got absolute path to `SpaceEngine.exe`");
@@ -275,7 +265,7 @@ fn __exe_from_shortcut() -> Result<PathBuf> {
         .local_base_path()
         .as_ref()
         .ok_or_else(|| eyre!("Can't find absolute path of `SpaceEngine.lnk`"))
-        .map(|s| PathBuf::from(s.clone()))
+        .map(|s| PathBuf::from(s.clone()).join("system\\SpaceEngine.exe"))
 }
 
 /// Extracted from [`__get_exe_path`]. Gets `SpaceEngine.exe` from the current
@@ -285,7 +275,9 @@ fn __exe_from_path() -> Result<PathBuf> {
     info!("Getting absolute path to `SpaceEngine.exe` from cwd");
 
     // I don't think this will ever fail.
-    env::current_dir().wrap_err(eyre!("Failed to get cwd"))
+    env::current_dir()
+        .map(|p| p.join("SpaceEngine.exe"))
+        .wrap_err(eyre!("Failed to get cwd"))
 }
 
 /// Internal function to reduce code repetition. This is easier to use than
