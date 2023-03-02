@@ -29,9 +29,12 @@ use windows::Win32::System::Diagnostics::Debug::ContinueDebugEvent;
 use windows::Win32::System::Diagnostics::Debug::DebugActiveProcessStop;
 use windows::Win32::System::Diagnostics::Debug::DebugSetProcessKillOnExit;
 use windows::Win32::System::Diagnostics::Debug::FlushInstructionCache;
+use windows::Win32::System::Diagnostics::Debug::GetThreadContext;
 use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+use windows::Win32::System::Diagnostics::Debug::SetThreadContext;
 use windows::Win32::System::Diagnostics::Debug::WaitForDebugEvent;
 use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
+use windows::Win32::System::Diagnostics::Debug::CONTEXT;
 use windows::Win32::System::Diagnostics::Debug::CREATE_PROCESS_DEBUG_EVENT;
 use windows::Win32::System::Diagnostics::Debug::DEBUG_EVENT;
 use windows::Win32::System::Diagnostics::Debug::EXCEPTION_DEBUG_EVENT;
@@ -44,10 +47,18 @@ use windows::Win32::System::Memory::PAGE_READWRITE;
 use windows::Win32::System::Threading::CreateRemoteThread;
 use windows::Win32::System::Threading::GetProcessId;
 use windows::Win32::System::Threading::GetThreadId;
+use windows::Win32::System::Threading::OpenThread;
 use windows::Win32::System::Threading::SuspendThread;
 use windows::Win32::System::Threading::DEBUG_ONLY_THIS_PROCESS;
 use windows::Win32::System::Threading::DEBUG_PROCESS;
 use windows::Win32::System::Threading::DETACHED_PROCESS;
+use windows::Win32::System::Threading::THREAD_ALL_ACCESS;
+
+#[repr(align(16))]
+#[derive(Default)]
+struct AlignedContext {
+    ctx: CONTEXT,
+}
 
 fn main() {
     let _guard = setup_logging().expect("Failed to setup logging");
@@ -142,6 +153,8 @@ fn __start_modded_se() -> Result<()> {
             // SAFETY: The if statement above guarantees this field is initializede
             let info = unsafe { dbg_event.u.Exception.ExceptionRecord };
 
+            info!("exception event: {:?}", info);
+
             // Ignore this event if it's not the one we forced, and mark it as unhandled
             if info.ExceptionAddress != entry.unwrap() {
                 unsafe {
@@ -153,6 +166,22 @@ fn __start_modded_se() -> Result<()> {
                 }
 
                 continue;
+            }
+
+            let mut context = AlignedContext::default();
+            context.ctx.ContextFlags = 1048587;
+
+            unsafe {
+                // Suspend main thread. This will be resumed by the dll later
+                SuspendThread(hthread);
+
+                let x = GetThreadContext(hthread, &mut context.ctx);
+                println!("{:?}", GetLastError());
+                info!("{:?}", context.ctx.Rip);
+
+                context.ctx.Rip -= 1u64;
+
+                SetThreadContext(hthread, &context.ctx);
             }
 
             let alloc = unsafe {
@@ -189,9 +218,6 @@ fn __start_modded_se() -> Result<()> {
             unsafe {
                 __write_memory(hprocess.unwrap(), entry.unwrap(), [original_byte.unwrap()])?;
 
-                // Suspend main thread. This will be resumed by the dll later
-                SuspendThread(hthread);
-
                 // TODO: This is a stupid way of doing this
                 writeln!(
                     File::create(path.join("../threadid").clean())?,
@@ -202,10 +228,10 @@ fn __start_modded_se() -> Result<()> {
                 ContinueDebugEvent(dbg_event.dwProcessId, dbg_event.dwThreadId, DBG_CONTINUE);
 
                 // Exit debugger, our job is done!
-                DebugSetProcessKillOnExit(false);
-                DebugActiveProcessStop(dbg_event.dwProcessId);
+                // DebugSetProcessKillOnExit(false);
+                // DebugActiveProcessStop(dbg_event.dwProcessId);
 
-                break;
+                // break;
             }
         }
 

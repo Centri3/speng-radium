@@ -1,9 +1,9 @@
 mod build;
+mod logging;
 
 use std::fs;
 use std::thread;
 use windows::w;
-use windows::Win32::Foundation::GetLastError;
 use windows::Win32::Foundation::HINSTANCE;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows::Win32::System::Threading::GetCurrentProcess;
@@ -40,9 +40,6 @@ fn main() {
         );
 
         ResumeThread(handle.unwrap());
-
-        println!("{:?}", GetLastError());
-        std::thread::sleep(std::time::Duration::from_secs(3));
     }
 }
 

@@ -60,7 +60,7 @@ fn __setup_hooks() -> Result<()> {
     // Setup color-eyre with custom settings
     let (ph, eh) = HookBuilder::default()
         .display_env_section(false)
-        .panic_section("Please report this at: https://github.com/Centri3/speng-starb/issues/new")
+        .panic_section("Please report this at: https://github.com/Centri3/speng-radium/issues/new")
         .into_hooks();
 
     eh.install().wrap_err("Failed to install color-eyre")?;
