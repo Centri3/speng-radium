@@ -150,7 +150,7 @@ fn __start_modded_se() -> Result<()> {
 
         // TODO: More logging here
         if dbg_event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
-            // SAFETY: The if statement above guarantees this field is initializede
+            // SAFETY: The if statement above guarantees this field is initialized
             let info = unsafe { dbg_event.u.Exception.ExceptionRecord };
 
             info!("exception event: {:?}", info);
