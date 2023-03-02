@@ -228,10 +228,10 @@ fn __start_modded_se() -> Result<()> {
                 ContinueDebugEvent(dbg_event.dwProcessId, dbg_event.dwThreadId, DBG_CONTINUE);
 
                 // Exit debugger, our job is done!
-                // DebugSetProcessKillOnExit(false);
-                // DebugActiveProcessStop(dbg_event.dwProcessId);
+                DebugSetProcessKillOnExit(false);
+                DebugActiveProcessStop(dbg_event.dwProcessId);
 
-                // break;
+                break;
             }
         }
 
