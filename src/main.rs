@@ -3,11 +3,10 @@
 mod build;
 mod logging;
 
+use crate::logging::SetupFile;
 use eyre::eyre;
 use eyre::Context;
 use eyre::Result;
-use lnk::ShellLink;
-use logging::setup_logging;
 use path_clean::PathClean;
 use std::env;
 use std::ffi::c_void;
@@ -18,6 +17,7 @@ use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use tracing::debug;
 use tracing::info;
 use windows::s;
 use windows::w;
@@ -34,7 +34,7 @@ use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::Diagnostics::Debug::SetThreadContext;
 use windows::Win32::System::Diagnostics::Debug::WaitForDebugEvent;
 use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
-use windows::Win32::System::Diagnostics::Debug::CONTEXT;
+use windows::Win32::System::Diagnostics::Debug::CONTEXT as UNALIGNED_CONTEXT;
 use windows::Win32::System::Diagnostics::Debug::CREATE_PROCESS_DEBUG_EVENT;
 use windows::Win32::System::Diagnostics::Debug::DEBUG_EVENT;
 use windows::Win32::System::Diagnostics::Debug::EXCEPTION_DEBUG_EVENT;
@@ -45,290 +45,198 @@ use windows::Win32::System::Memory::MEM_COMMIT;
 use windows::Win32::System::Memory::MEM_RESERVE;
 use windows::Win32::System::Memory::PAGE_READWRITE;
 use windows::Win32::System::Threading::CreateRemoteThread;
-use windows::Win32::System::Threading::GetProcessId;
-use windows::Win32::System::Threading::GetThreadId;
 use windows::Win32::System::Threading::SuspendThread;
 use windows::Win32::System::Threading::DEBUG_ONLY_THIS_PROCESS;
 use windows::Win32::System::Threading::DEBUG_PROCESS;
 use windows::Win32::System::Threading::DETACHED_PROCESS;
 
+const CONTEXT_AMD64: u32 = 0x00100000;
+const CONTEXT_CONTROL: u32 = CONTEXT_AMD64 | 0x00000001;
+const CONTEXT_INTEGER: u32 = CONTEXT_AMD64 | 0x00000002;
+const CONTEXT_SEGMENTS: u32 = CONTEXT_AMD64 | 0x00000004;
+const CONTEXT_FLOATING_POINT: u32 = CONTEXT_AMD64 | 0x00000008;
+const CONTEXT_DEBUG_REGISTERS: u32 = CONTEXT_AMD64 | 0x00000010;
+const CONTEXT_FULL: u32 = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT;
+
+#[allow(clippy::upper_case_acronyms)]
 #[repr(align(16))]
 #[derive(Default)]
-struct AlignedContext {
-    ctx: CONTEXT,
-}
+struct CONTEXT(UNALIGNED_CONTEXT);
 
 fn main() {
-    let _guard = setup_logging().expect("Failed to setup logging");
+    let _guard = logging::setup(SetupFile::Overwrite).expect("Failed to setup logging");
 
-    __start_modded_se().unwrap();
+    // We must do this to use Result everywhere
+    __start_modded_se().expect("Failed to start modded SE");
 }
 
-/// Extracted from [`main`]. Starts modded SE.
 #[inline(always)]
 fn __start_modded_se() -> Result<()> {
-    let path = __get_exe_path().expect("Failed to get path to SpaceEngine.exe");
+    let cwd = env::current_dir()?;
 
-    // TODO: Check if speng_radium.dll exists
-    // TODO: Check if steam_appid.txt exists
+    // Log cwd because it's helpful
+    info!(?cwd);
 
-    Command::new(&path)
-        // SpaceEngine/system/SpaceEngine.exe -> SpaceEngine/system
-        .current_dir(&path.join("../").clean())
-        // Debug SE and don't inherit console
+    Command::new(cwd.join("SpaceEngine.exe"))
         .creation_flags(DEBUG_ONLY_THIS_PROCESS.0 | DEBUG_PROCESS.0 | DETACHED_PROCESS.0)
-        // Don't use debug heap. Speeds up modded SE a LOT.
         .env("_NO_DEBUG_HEAP", "1")
-        .spawn()?;
+        .spawn()
+        .wrap_err("Starting `SpaceEngine.exe` failed")?;
 
-    // TODO: Unwrapping these is very annoying
+    if !cwd.join("libradium.dll").try_exists()? {
+        return Err(eyre!("`libradium.dll` does not exist"));
+    }
 
-    // Handles to SE
-    let mut hprocess = None;
-    let mut hthread = None;
-    // Basic data of SE
-    let mut pid = None;
-    let mut tid = None;
-    let mut base = None;
-    let mut entry = None;
-    // First byte at SE's entry point
-    let mut original_byte = None;
+    // Generate steam_appid.txt
+    write!(File::create("steam_appid.txt")?, "314650")?;
 
+    // We want to reuse CREATE_PROCESS_DEBUG_EVENT later, so we put this here
+    // instead. Probably unsafe, or just stupid.
+    let mut dbg_event = DEBUG_EVENT::default();
+
+    // Debugger loop
     loop {
-        let mut dbg_event = DEBUG_EVENT::default();
-
-        // SAFETY: Safe, as we use a mutable reference here instead of a raw pointer
+        // SAFETY: This uses a mutable reference, so it's safe
         unsafe { WaitForDebugEvent(&mut dbg_event, u32::MAX) };
 
-        // We want to raise an exception once SE's main thread reaches SE's entry point,
-        // so we can suspend it. We do this when SE's created.
-        if dbg_event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT {
-            // SAFETY: The if statement above guarantees this field is initialized
-            let info = unsafe { dbg_event.u.CreateProcessInfo };
-
-            // Save handles to SE
-            (hprocess, hthread) = (Some(info.hProcess), Some(info.hThread));
-
-            // Get some basic data of SE from `info`
-            (pid, tid, base, entry) = unsafe {
-                (
-                    Some(GetProcessId(info.hProcess)),
-                    Some(GetThreadId(info.hThread)),
-                    Some(info.lpBaseOfImage),
-                    Some(info.lpStartAddress.unwrap() as *mut c_void),
-                )
-            };
-
-            info!(
-                pid = pid.unwrap(),
-                tid = tid.unwrap(),
-                base = ?base.unwrap(),
-                base = ?entry.unwrap(),
-                "Got `CREATE_PROCESS_DEBUG_EVENT`, SE has been started"
-            );
-
-            // Save the first byte at SE's entry point
-            original_byte = Some(
-                *__read_memory(info.hProcess, entry.unwrap(), 1usize)?
-                    .first()
-                    .unwrap(),
-            );
-
-            // SAFETY: This will cause SE to raise an exception, so if it's not handled this
-            // is not safe. It WILL be handled, however.
-            unsafe { __write_memory(info.hProcess, entry.unwrap(), [0xccu8])? };
-        }
-
-        // TODO: More logging here
-        if dbg_event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
-            // SAFETY: The if statement above guarantees this field is initialized
-            let info = unsafe { dbg_event.u.Exception.ExceptionRecord };
-
-            info!("exception event: {:?}", info);
-
-            // Ignore this event if it's not the one we forced, and mark it as unhandled
-            if info.ExceptionAddress != entry.unwrap() {
-                unsafe {
-                    ContinueDebugEvent(
-                        dbg_event.dwProcessId,
-                        dbg_event.dwThreadId,
-                        DBG_EXCEPTION_NOT_HANDLED,
-                    );
-                }
-
-                continue;
-            }
-
-            let mut context = AlignedContext::default();
-            context.ctx.ContextFlags = 1048587;
-
-            unsafe {
-                // Suspend main thread. This will be resumed by the dll later
-                SuspendThread(hthread);
-
-                let x = GetThreadContext(hthread, &mut context.ctx);
-                println!("{:?}", GetLastError());
-                info!("{:?}", context.ctx.Rip);
-
-                context.ctx.Rip -= 1u64;
-
-                SetThreadContext(hthread, &context.ctx);
-            }
-
-            let alloc = unsafe {
-                // Write our dll's name to SE's memory
-                VirtualAllocEx(
-                    hprocess,
-                    None,
-                    "speng_radium.dll".as_bytes().len(),
-                    MEM_RESERVE | MEM_COMMIT,
-                    PAGE_READWRITE,
-                )
-            };
-
-            // SAFETY: We're writing to the memory we just allocated, so this won't fail
-            unsafe { __write_memory(hprocess.unwrap(), alloc, "speng_radium.dll".as_bytes())? };
-
-            // SAFETY: This will call LoadLibraryA. TODO: VERY UNSAFE BECAUSE OF TRANSMUTE.
-            unsafe {
-                CreateRemoteThread(
-                    hprocess,
-                    None,
-                    0usize,
-                    Some(transmute(
-                        GetProcAddress(GetModuleHandleW(w!("kernel32.dll"))?, s!("LoadLibraryA"))
-                            .ok_or_else(|| eyre!("Failed to get address to LoadLibraryA"))?,
-                    )),
-                    Some(alloc),
-                    0u32,
-                    None,
-                )?;
-            }
-
-            // SAFETY: We're restoring the byte that was here before, so this is fine
-            unsafe {
-                __write_memory(hprocess.unwrap(), entry.unwrap(), [original_byte.unwrap()])?;
-
-                // TODO: This is a stupid way of doing this
-                writeln!(
-                    File::create(path.join("../threadid").clean())?,
-                    "{}",
-                    GetThreadId(hthread.unwrap())
-                )?;
-
-                ContinueDebugEvent(dbg_event.dwProcessId, dbg_event.dwThreadId, DBG_CONTINUE);
-
-                // Exit debugger, our job is done!
-                DebugSetProcessKillOnExit(false);
-                DebugActiveProcessStop(dbg_event.dwProcessId);
-
-                break;
-            }
-        }
-
-        unsafe { ContinueDebugEvent(dbg_event.dwProcessId, dbg_event.dwThreadId, DBG_CONTINUE) };
+        // CREATE_PROCESS_DEBUG_EVENT happens first, then EXCEPTION_DEBUG_EVENT is
+        // expected later (as we force an exception!)
+        match dbg_event.dwDebugEventCode {
+            EXCEPTION_DEBUG_EVENT => __handle_exception(dbg_event)?,
+            CREATE_PROCESS_DEBUG_EVENT => __handle_p_creation(dbg_event)?,
+            // Unknown or unused exception, skip it
+            _ => {}
+        };
     }
 
     Ok(())
 }
 
-/// Extracted from [`__start_modded_se`]. Gets `SpaceEngine.exe`, either from
-/// `SpaceEngine.lnk` if it exists, or the current working directory.
+#[allow(clippy::fn_to_numeric_cast)]
 #[inline(always)]
-fn __get_exe_path() -> Result<PathBuf> {
-    let path = match Path::new("SpaceEngine.lnk").try_exists()? {
-        // Get absolute path to `SpaceEngine.exe` from shortcut, if it exists
-        true => __exe_from_shortcut(),
-        // Otherwise, get from the current working directory
-        false => __exe_from_path(),
-    }?;
+fn __handle_p_creation(dbg_event: DEBUG_EVENT) -> Result<()> {
+    info!("Got `CREATE_PROCESS_DEBUG_INFO`, SE has been started");
 
-    // Print the path we just obtained
-    info!(?path, "Successfully got absolute path to `SpaceEngine.exe`");
+    // SAFETY: This is only called when CREATE_PROCESS_DEBUG_EVENT is encountered,
+    // so this will always be initialized
+    let info = unsafe { dbg_event.u.CreateProcessInfo };
 
-    Ok(path)
+    let mut context = CONTEXT(UNALIGNED_CONTEXT {
+        ContextFlags: CONTEXT_FULL | CONTEXT_SEGMENTS | CONTEXT_DEBUG_REGISTERS,
+        ..Default::default()
+    });
+
+    unsafe { GetThreadContext(info.hThread, &mut context.0).unwrap() };
+
+    // Set Dr0 to the entry point of SE
+    context.0.Dr0 = info.lpStartAddress.unwrap() as u64;
+
+    // Enable Dr0 breakpoint. We don't need to modify the type or size here, as this
+    // is an exception breakpoint by default
+    context.0.Dr7 = 1u64;
+
+    unsafe { SetThreadContext(info.hThread, &context.0).unwrap() };
+
+    // Continue debugger
+    unsafe { ContinueDebugEvent(dbg_event.dwProcessId, dbg_event.dwThreadId, DBG_CONTINUE) };
+
+    Ok(())
 }
 
-/// Extracted from [`__get_exe_path`]. Gets `SpaceEngine.exe` from
-/// `SpaceEngine.lnk`.
+#[allow(clippy::fn_to_numeric_cast)]
 #[inline(always)]
-fn __exe_from_shortcut() -> Result<PathBuf> {
-    info!("Getting absolute path to `SpaceEngine.exe` from `SpaceEngine.lnk`");
-
-    let link = ShellLink::open("SpaceEngine.lnk")
-        // Normally, I'd just put e here, but this makes it aligned with the others. It's pretty!
-        .map_err(|err| eyre!("`SpaceEngine.lnk` exists, but failed to open it: {err:?}"))?;
-
-    link.link_info()
-        .as_ref()
-        .ok_or_else(|| eyre!("`SpaceEngine.lnk` does not have `LinkInfo` structure"))?
-        .local_base_path()
-        .as_ref()
-        .ok_or_else(|| eyre!("Can't find absolute path of `SpaceEngine.lnk`"))
-        .map(|s| PathBuf::from(s.clone()).join("system\\SpaceEngine.exe"))
-}
-
-/// Extracted from [`__get_exe_path`]. Gets `SpaceEngine.exe` from the current
-/// working directory.
-#[inline(always)]
-fn __exe_from_path() -> Result<PathBuf> {
-    info!("Getting absolute path to `SpaceEngine.exe` from cwd");
-
-    // I don't think this will ever fail.
-    env::current_dir()
-        .map(|p| p.join("SpaceEngine.exe"))
-        .wrap_err(eyre!("Failed to get cwd"))
-}
-
-/// Internal function to reduce code repetition. This is easier to use than
-/// calling [`ReadProcessMemory`] over and over again.
-#[inline(always)]
-fn __read_memory(handle: HANDLE, address: *const c_void, size: usize) -> Result<Vec<u8>> {
-    // This will be filled later
-    let mut buffer = vec![0u8; size];
-
-    // SAFETY: Reading with `ReadProcessMemory` is safe, as it'll return `Err` if
-    // any error occurs, rather than crashing.
-    unsafe {
-        if !ReadProcessMemory(
-            handle,
-            address,
-            buffer.as_mut_ptr().cast::<c_void>(),
-            size,
-            None,
+fn __handle_exception(dbg_event: DEBUG_EVENT) -> Result<()> {
+    // SAFETY: This is only called when EXCEPTION_DEBUG_EVENT is encountered,
+    // so this will always be initialized
+    let info = unsafe { dbg_event.u.Exception };
+    // SAFETY: This is guaranteed to be initialized, as CREATE_PROCESS_DEBUG_EVENT
+    // is always encountered. BUT, if it's encountered twice, then this may be an
+    // issue.
+    let (hprocess, hthread, entry_point) = unsafe {
+        (
+            dbg_event.u.CreateProcessInfo.hProcess,
+            dbg_event.u.CreateProcessInfo.hThread,
+            dbg_event.u.CreateProcessInfo.lpStartAddress.unwrap(),
         )
-        .as_bool()
-        {
-            return Err(eyre!(
-                "Failed to read memory at `{address:?}`, `{size:?}`: {}",
-                GetLastError().0
-            ));
+    };
+
+    let mut context = CONTEXT(UNALIGNED_CONTEXT {
+        ContextFlags: CONTEXT_FULL | CONTEXT_SEGMENTS | CONTEXT_DEBUG_REGISTERS,
+        ..Default::default()
+    });
+
+    unsafe { GetThreadContext(hthread, &mut context.0).unwrap() };
+
+    if context.0.Dr0 == entry_point as u64 {
+        unsafe {
+            // This is fine since this will be resumed by the dll later
+            SuspendThread(hthread);
+
+            // ☹️
+            let absolute_path = Path::new("libradium.dll").canonicalize()?;
+
+            let dll_path = absolute_path
+                .to_str()
+                .expect("Failed to convert path to `libradium.dll` to a string")
+                .as_bytes();
+
+            // SAFETY: Checking if this is NULL guarantees this is safe, as the memory will
+            // always be allocated
+            let alloc = VirtualAllocEx(
+                hprocess,
+                None,
+                dll_path.len(),
+                MEM_RESERVE | MEM_COMMIT,
+                PAGE_READWRITE,
+            );
+
+            if alloc.is_null() {
+                return Err(eyre!("Failed to allocate memory for `libradium.dll`"));
+            }
+
+            // SAFETY: We just allocated this memory, so this is fine
+            WriteProcessMemory(
+                hprocess,
+                alloc,
+                dll_path.as_ptr().cast(),
+                dll_path.len(),
+                None,
+            );
+
+            // SAFETY: VERY UNSAFE BECAUSE OF TRANSMUTE. This will call LoadLibraryW.
+            CreateRemoteThread(
+                hprocess,
+                None,
+                0usize,
+                Some(transmute(
+                    GetProcAddress(GetModuleHandleW(w!("kernel32.dll"))?, s!("LoadLibraryW"))
+                        .ok_or_else(|| eyre!("Failed to get address of `LoadLibraryW`"))?,
+                )),
+                Some(alloc),
+                0u32,
+                None,
+            )?;
+
+            // TODO: Should this restore Dr0 of the main thread here? Doesn't really make a
+            // difference, but it can...
+
+            // SAFETY: This will only continue on our exception, so this is safe
+            ContinueDebugEvent(dbg_event.dwProcessId, dbg_event.dwThreadId, DBG_CONTINUE);
+
+            // Exit debugger
+            DebugSetProcessKillOnExit(false);
+            DebugActiveProcessStop(dbg_event.dwProcessId);
         }
     }
 
-    Ok(buffer)
-}
-
-/// Internal function to reduce code repetition. This is easier to use than
-/// calling [`WriteProcessMemory`] over and over again.
-#[inline(always)]
-unsafe fn __write_memory(
-    handle: HANDLE, address: *const c_void, value: impl AsRef<[u8]>,
-) -> Result<()> {
-    let value = value.as_ref();
-
-    // SAFETY: This is safe as long as you don't overwrite executing code.
+    // SAFETY: If this isn't our exception, we mark it as unhandled
     unsafe {
-        WriteProcessMemory(
-            handle,
-            address,
-            value.as_ptr().cast::<c_void>(),
-            value.len(),
-            None,
-        );
-
-        FlushInstructionCache(handle, Some(address), value.len());
-    }
+        ContinueDebugEvent(
+            dbg_event.dwProcessId,
+            dbg_event.dwThreadId,
+            DBG_EXCEPTION_NOT_HANDLED,
+        )
+    };
 
     Ok(())
 }

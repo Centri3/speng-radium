@@ -3,28 +3,33 @@ use eyre::Result;
 use eyre::WrapErr;
 use std::env;
 use std::fs;
-use std::io;
 use std::panic;
 use tracing::error;
-use tracing::trace;
 use tracing_appender::non_blocking::NonBlocking;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::never;
 use tracing_error::ErrorLayer;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
-use tracing_subscriber::fmt::{self};
+use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry;
 use tracing_subscriber::EnvFilter;
 
-#[inline(always)]
-pub fn setup_logging() -> Result<WorkerGuard> {
-    // Backtrace should only be enabled in debug mode
+#[derive(Debug, Default, Eq, PartialEq)]
+pub enum SetupFile {
+    #[default]
+    Retain,
+    Overwrite,
+}
+
+#[inline]
+pub fn setup(setup_file: SetupFile) -> Result<WorkerGuard> {
     #[cfg(debug_assertions)]
     env::set_var("RUST_BACKTRACE", "full");
 
-    // We don't care if this fails, as it means the log didn't exist already
-    _ = fs::remove_file("radium.log");
+    if setup_file == SetupFile::Overwrite {
+        // We don't care if this fails, as it means the log didn't exist already
+        _ = fs::remove_file("radium.log");
+    }
 
     let (log_file, guard) = tracing_appender::non_blocking(never("", "radium.log"));
 
@@ -32,23 +37,17 @@ pub fn setup_logging() -> Result<WorkerGuard> {
 
     __setup_hooks()?;
 
-    trace!("Logging successfully setup");
-
     // Return guard to guarantee everything is logged before closing
     Ok(guard)
 }
 
 #[inline(always)]
 fn __setup_tracing(log_file: NonBlocking) -> Result<()> {
-    // FIXME: This writes to stdout even in release mode, where it isn't visible.
-    // This should be fixed.
-    let fmt_layer = fmt::layer()
-        .with_writer(log_file.and(io::stdout))
-        .with_thread_names(true);
+    let fmt_layer = fmt::layer().with_writer(log_file).with_thread_names(true);
 
     registry()
         .with(ErrorLayer::default())
-        .with(EnvFilter::try_new("speng_radium")?)
+        .with(EnvFilter::try_new("trace")?)
         .with(fmt_layer)
         .init();
 
