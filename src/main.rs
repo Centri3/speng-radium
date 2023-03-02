@@ -63,6 +63,13 @@ fn __start_modded_se() -> Result<()> {
     // TODO: Check if speng_radium.dll exists
     // TODO: Check if steam_appid.txt exists
 
+    // FIXME: Temporary solution
+    let path = if path.join("../../").clean().ends_with("system") {
+        "SpaceEngine.exe".into()
+    } else {
+        path
+    };
+
     Command::new(&path)
         // SpaceEngine/system/SpaceEngine.exe -> SpaceEngine/system
         .current_dir(&path.join("../").clean())
