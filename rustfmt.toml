@@ -2,5 +2,6 @@
 format_strings = true
 
 # Preference
+fn_params_layout = "Compressed"
 imports_granularity = "Item"
 wrap_comments = true
