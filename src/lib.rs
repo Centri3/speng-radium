@@ -2,9 +2,9 @@ mod build;
 mod logging;
 
 use logging::SetupFile;
+use tracing::trace;
 use std::mem::size_of;
 use std::thread::Builder;
-use tracing::debug;
 use windows::w;
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Foundation::HINSTANCE;
@@ -28,7 +28,7 @@ use windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_RESULT;
 fn main() {
     let _guard = logging::setup(SetupFile::Retain).expect("Failed to setup logging");
 
-    debug!("`libradium.dll` has been loaded by SE");
+    trace!("`libradium.dll` has been loaded by SE");
 
     unsafe {
         if MessageBoxW(
