@@ -52,7 +52,7 @@ fn __setup_tracing(log_file: NonBlocking) -> Result<()> {
 
     registry()
         .with(ErrorLayer::default())
-        .with(EnvFilter::try_new("radium,libradium")?)
+        .with(EnvFilter::try_new("[loader],[libradium]")?)
         .with(fmt_layer)
         .init();
 
