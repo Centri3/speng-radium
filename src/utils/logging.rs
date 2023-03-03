@@ -22,7 +22,12 @@ pub enum SetupFile {
 }
 
 #[inline]
-pub fn setup(setup_file: SetupFile) -> Result<WorkerGuard> {
+pub fn setup(setup_file: SetupFile) -> WorkerGuard {
+    try_setup(setup_file).expect("Failed to setup logging")
+}
+
+#[inline]
+pub fn try_setup(setup_file: SetupFile) -> Result<WorkerGuard> {
     #[cfg(debug_assertions)]
     env::set_var("RUST_BACKTRACE", "full");
 
@@ -47,7 +52,7 @@ fn __setup_tracing(log_file: NonBlocking) -> Result<()> {
 
     registry()
         .with(ErrorLayer::default())
-        .with(EnvFilter::try_new("trace")?)
+        .with(EnvFilter::try_new("radium,libradium")?)
         .with(fmt_layer)
         .init();
 

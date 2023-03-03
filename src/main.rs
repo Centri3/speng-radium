@@ -1,9 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod build;
-mod logging;
+mod utils;
 
-use crate::logging::SetupFile;
+use crate::utils::logging;
+use crate::utils::logging::SetupFile;
 use eyre::eyre;
 use eyre::Context;
 use eyre::Result;
@@ -62,7 +63,8 @@ const CONTEXT_FULL: u32 = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_P
 struct CONTEXT(UNALIGNED_CONTEXT);
 
 fn main() {
-    let _guard = logging::setup(SetupFile::Overwrite).expect("Failed to setup logging");
+    // Setup logging and overwrite the log file, panicking if it fails
+    let _guard = logging::setup(SetupFile::Overwrite);
 
     // We must do this to use Result everywhere
     __start_modded_se().expect("Failed to start modded SE");
@@ -131,7 +133,6 @@ fn __start_modded_se() -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::fn_to_numeric_cast)]
 #[inline(always)]
 fn __handle_process_creation(
     dbg_event: DEBUG_EVENT, hprocess: &mut HANDLE, hthread: &mut HANDLE, base: &mut *mut c_void,
@@ -161,7 +162,7 @@ fn __handle_process_creation(
     unsafe { GetThreadContext(info.hThread, &mut context.0) };
 
     // Set Dr0 to the entry point of SE
-    context.0.Dr0 = info.lpStartAddress.unwrap() as u64;
+    context.0.Dr0 = info.lpStartAddress.unwrap() as usize as u64;
 
     // Enable Dr0 breakpoint. We don't need to modify the type or size here, as this
     // is an exception breakpoint by default
@@ -177,7 +178,6 @@ fn __handle_process_creation(
     Ok(())
 }
 
-#[allow(clippy::fn_to_numeric_cast)]
 #[inline(always)]
 fn __handle_exception(
     dbg_event: DEBUG_EVENT, hprocess: HANDLE, hthread: HANDLE, base: *const c_void,

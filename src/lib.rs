@@ -1,10 +1,11 @@
 mod build;
-mod logging;
+mod utils;
 
-use logging::SetupFile;
-use tracing::trace;
+use crate::utils::logging;
+use crate::utils::logging::SetupFile;
 use std::mem::size_of;
 use std::thread::Builder;
+use tracing::trace;
 use windows::w;
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Foundation::HINSTANCE;
@@ -26,7 +27,8 @@ use windows::Win32::UI::WindowsAndMessaging::MB_OKCANCEL;
 use windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_RESULT;
 
 fn main() {
-    let _guard = logging::setup(SetupFile::Retain).expect("Failed to setup logging");
+    // Setup logging and retain the log file, panicking if it fails
+    let _guard = logging::setup(SetupFile::Retain);
 
     trace!("`libradium.dll` has been loaded by SE");
 
@@ -66,6 +68,8 @@ fn main() {
             }
         }
     }
+
+    panic!();
 }
 
 #[no_mangle]
