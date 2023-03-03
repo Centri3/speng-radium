@@ -2,16 +2,24 @@ mod build;
 mod logging;
 
 use logging::SetupFile;
-use std::fs;
+use std::mem::size_of;
 use std::thread::Builder;
+use tracing::debug;
 use windows::w;
+use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Foundation::HINSTANCE;
+use windows::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot;
+use windows::Win32::System::Diagnostics::ToolHelp::Thread32Next;
+use windows::Win32::System::Diagnostics::ToolHelp::TH32CS_SNAPTHREAD;
+use windows::Win32::System::Diagnostics::ToolHelp::THREADENTRY32;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows::Win32::System::Threading::GetCurrentProcess;
+use windows::Win32::System::Threading::GetCurrentProcessId;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::Threading::OpenThread;
 use windows::Win32::System::Threading::ResumeThread;
 use windows::Win32::System::Threading::TerminateProcess;
-use windows::Win32::System::Threading::THREAD_ALL_ACCESS;
+use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
 use windows::Win32::UI::WindowsAndMessaging::MessageBoxW;
 use windows::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION;
 use windows::Win32::UI::WindowsAndMessaging::MB_OKCANCEL;
@@ -20,10 +28,12 @@ use windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_RESULT;
 fn main() {
     let _guard = logging::setup(SetupFile::Retain).expect("Failed to setup logging");
 
+    debug!("`libradium.dll` has been loaded by SE");
+
     unsafe {
         if MessageBoxW(
             None,
-            w!("Hello from Radium! Successfully injected speng_radium.dll into SE."),
+            w!("Hello from Radium! Successfully injected libradium.dll into SE."),
             w!("Hello, world!"),
             MB_OKCANCEL | MB_ICONINFORMATION,
         ) == MESSAGEBOX_RESULT(2i32)
@@ -31,18 +41,30 @@ fn main() {
             TerminateProcess(GetCurrentProcess(), 0u32);
         }
 
-        // FIXME: THIS SHOULD NOT PANIC.
-        let handle = OpenThread(
-            THREAD_ALL_ACCESS,
-            false,
-            fs::read_to_string("threadid")
-                .unwrap()
-                .trim()
-                .parse::<isize>()
-                .unwrap() as u32,
-        );
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0u32).unwrap();
+        let mut entry = THREADENTRY32 {
+            dwSize: size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
 
-        ResumeThread(handle.unwrap());
+        // TODO: Should this unwrap here?
+        while Thread32Next(snapshot, &mut entry).as_bool() {
+            entry.dwSize = size_of::<THREADENTRY32>() as u32;
+
+            // There's only our thread and the main thread when this is ran, so we just
+            // resume the first one where this isn't true
+            if entry.th32OwnerProcessID == GetCurrentProcessId()
+                && entry.th32ThreadID != GetCurrentThreadId()
+            {
+                let hthread = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID).unwrap();
+
+                ResumeThread(hthread);
+
+                CloseHandle(hthread);
+
+                break;
+            }
+        }
     }
 }
 

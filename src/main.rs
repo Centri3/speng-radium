@@ -7,7 +7,6 @@ use crate::logging::SetupFile;
 use eyre::eyre;
 use eyre::Context;
 use eyre::Result;
-use path_clean::PathClean;
 use std::env;
 use std::ffi::c_void;
 use std::fs::File;
@@ -15,22 +14,21 @@ use std::io::Write;
 use std::mem::transmute;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Command;
+use std::ptr::null_mut;
 use tracing::debug;
 use tracing::info;
+use tracing::warn;
 use windows::s;
 use windows::w;
-use windows::Win32::Foundation::GetLastError;
 use windows::Win32::Foundation::DBG_CONTINUE;
 use windows::Win32::Foundation::DBG_EXCEPTION_NOT_HANDLED;
+use windows::Win32::Foundation::EXCEPTION_SINGLE_STEP;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Diagnostics::Debug::ContinueDebugEvent;
 use windows::Win32::System::Diagnostics::Debug::DebugActiveProcessStop;
 use windows::Win32::System::Diagnostics::Debug::DebugSetProcessKillOnExit;
-use windows::Win32::System::Diagnostics::Debug::FlushInstructionCache;
 use windows::Win32::System::Diagnostics::Debug::GetThreadContext;
-use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::Diagnostics::Debug::SetThreadContext;
 use windows::Win32::System::Diagnostics::Debug::WaitForDebugEvent;
 use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
@@ -90,43 +88,77 @@ fn __start_modded_se() -> Result<()> {
     // Generate steam_appid.txt
     write!(File::create("steam_appid.txt")?, "314650")?;
 
-    // We want to reuse CREATE_PROCESS_DEBUG_EVENT later, so we put this here
-    // instead. Probably unsafe, or just stupid.
-    let mut dbg_event = DEBUG_EVENT::default();
+    let mut hprocess = HANDLE::default();
+    let mut hthread = HANDLE::default();
+    let mut base = null_mut::<c_void>();
+    let mut entry = null_mut::<c_void>();
 
     // Debugger loop
     loop {
+        let mut dbg_event = DEBUG_EVENT::default();
+
         // SAFETY: This uses a mutable reference, so it's safe
         unsafe { WaitForDebugEvent(&mut dbg_event, u32::MAX) };
 
         // CREATE_PROCESS_DEBUG_EVENT happens first, then EXCEPTION_DEBUG_EVENT is
         // expected later (as we force an exception!)
+        // FIXME: Close handles here
         match dbg_event.dwDebugEventCode {
-            EXCEPTION_DEBUG_EVENT => __handle_exception(dbg_event)?,
-            CREATE_PROCESS_DEBUG_EVENT => __handle_p_creation(dbg_event)?,
-            // Unknown or unused exception, skip it
-            _ => {}
+            CREATE_PROCESS_DEBUG_EVENT => __handle_process_creation(
+                dbg_event,
+                &mut hprocess,
+                &mut hthread,
+                &mut base,
+                &mut entry,
+            )?,
+            EXCEPTION_DEBUG_EVENT => {
+                let exit = __handle_exception(dbg_event, hprocess, hthread, base, entry)?;
+
+                // Exit debugger loop
+                if exit {
+                    break;
+                }
+            }
+            // Unknown or unused event, skip it
+            _ => unsafe {
+                ContinueDebugEvent(dbg_event.dwProcessId, dbg_event.dwThreadId, DBG_CONTINUE);
+            },
         };
     }
+
+    info!("Debugger loop has been escaped, loader's job is done here");
 
     Ok(())
 }
 
 #[allow(clippy::fn_to_numeric_cast)]
 #[inline(always)]
-fn __handle_p_creation(dbg_event: DEBUG_EVENT) -> Result<()> {
+fn __handle_process_creation(
+    dbg_event: DEBUG_EVENT, hprocess: &mut HANDLE, hthread: &mut HANDLE, base: &mut *mut c_void,
+    entry: &mut *mut c_void,
+) -> Result<()> {
     info!("Got `CREATE_PROCESS_DEBUG_INFO`, SE has been started");
 
     // SAFETY: This is only called when CREATE_PROCESS_DEBUG_EVENT is encountered,
     // so this will always be initialized
     let info = unsafe { dbg_event.u.CreateProcessInfo };
 
+    (*hprocess, *hthread, *base, *entry) = (
+        info.hProcess,
+        info.hThread,
+        info.lpBaseOfImage,
+        info.lpStartAddress.unwrap() as *mut c_void,
+    );
+
+    // Print debug info
+    info!(?base, ?entry, "Basic info of SE");
+
     let mut context = CONTEXT(UNALIGNED_CONTEXT {
         ContextFlags: CONTEXT_FULL | CONTEXT_SEGMENTS | CONTEXT_DEBUG_REGISTERS,
         ..Default::default()
     });
 
-    unsafe { GetThreadContext(info.hThread, &mut context.0).unwrap() };
+    unsafe { GetThreadContext(info.hThread, &mut context.0) };
 
     // Set Dr0 to the entry point of SE
     context.0.Dr0 = info.lpStartAddress.unwrap() as u64;
@@ -135,7 +167,9 @@ fn __handle_p_creation(dbg_event: DEBUG_EVENT) -> Result<()> {
     // is an exception breakpoint by default
     context.0.Dr7 = 1u64;
 
-    unsafe { SetThreadContext(info.hThread, &context.0).unwrap() };
+    unsafe { SetThreadContext(info.hThread, &context.0) };
+
+    debug!("Breakpoint at entry has been set");
 
     // Continue debugger
     unsafe { ContinueDebugEvent(dbg_event.dwProcessId, dbg_event.dwThreadId, DBG_CONTINUE) };
@@ -145,30 +179,19 @@ fn __handle_p_creation(dbg_event: DEBUG_EVENT) -> Result<()> {
 
 #[allow(clippy::fn_to_numeric_cast)]
 #[inline(always)]
-fn __handle_exception(dbg_event: DEBUG_EVENT) -> Result<()> {
+fn __handle_exception(
+    dbg_event: DEBUG_EVENT, hprocess: HANDLE, hthread: HANDLE, base: *const c_void,
+    entry: *const c_void,
+) -> Result<bool> {
     // SAFETY: This is only called when EXCEPTION_DEBUG_EVENT is encountered,
     // so this will always be initialized
-    let info = unsafe { dbg_event.u.Exception };
-    // SAFETY: This is guaranteed to be initialized, as CREATE_PROCESS_DEBUG_EVENT
-    // is always encountered. BUT, if it's encountered twice, then this may be an
-    // issue.
-    let (hprocess, hthread, entry_point) = unsafe {
-        (
-            dbg_event.u.CreateProcessInfo.hProcess,
-            dbg_event.u.CreateProcessInfo.hThread,
-            dbg_event.u.CreateProcessInfo.lpStartAddress.unwrap(),
-        )
-    };
+    let info = unsafe { dbg_event.u.Exception.ExceptionRecord };
 
-    let mut context = CONTEXT(UNALIGNED_CONTEXT {
-        ContextFlags: CONTEXT_FULL | CONTEXT_SEGMENTS | CONTEXT_DEBUG_REGISTERS,
-        ..Default::default()
-    });
-
-    unsafe { GetThreadContext(hthread, &mut context.0).unwrap() };
-
-    if context.0.Dr0 == entry_point as u64 {
+    if info.ExceptionAddress == entry as *mut c_void && info.ExceptionCode == EXCEPTION_SINGLE_STEP
+    {
         unsafe {
+            debug!("Breakpoint at entry has been hit");
+
             // This is fine since this will be resumed by the dll later
             SuspendThread(hthread);
 
@@ -203,22 +226,36 @@ fn __handle_exception(dbg_event: DEBUG_EVENT) -> Result<()> {
                 None,
             );
 
-            // SAFETY: VERY UNSAFE BECAUSE OF TRANSMUTE. This will call LoadLibraryW.
+            // SAFETY: VERY UNSAFE BECAUSE OF TRANSMUTE. This will call LoadLibraryA.
             CreateRemoteThread(
                 hprocess,
                 None,
                 0usize,
                 Some(transmute(
-                    GetProcAddress(GetModuleHandleW(w!("kernel32.dll"))?, s!("LoadLibraryW"))
-                        .ok_or_else(|| eyre!("Failed to get address of `LoadLibraryW`"))?,
+                    GetProcAddress(GetModuleHandleW(w!("kernel32.dll"))?, s!("LoadLibraryA"))
+                        .ok_or_else(|| eyre!("Failed to get address of `LoadLibraryA`"))?,
                 )),
                 Some(alloc),
                 0u32,
                 None,
             )?;
 
-            // TODO: Should this restore Dr0 of the main thread here? Doesn't really make a
-            // difference, but it can...
+            let mut context = CONTEXT(UNALIGNED_CONTEXT {
+                ContextFlags: CONTEXT_FULL | CONTEXT_SEGMENTS | CONTEXT_DEBUG_REGISTERS,
+                ..Default::default()
+            });
+
+            GetThreadContext(hthread, &mut context.0);
+
+            // Set Dr0 to 0
+            context.0.Dr0 = 0u64;
+
+            // Disable Dr0 breakpoint
+            context.0.Dr7 = 0u64;
+
+            // FIXME: This doesn't restore debug registers, just sets them to 0. But it
+            // makes literally zero difference.
+            SetThreadContext(hthread, &context.0);
 
             // SAFETY: This will only continue on our exception, so this is safe
             ContinueDebugEvent(dbg_event.dwProcessId, dbg_event.dwThreadId, DBG_CONTINUE);
@@ -226,8 +263,12 @@ fn __handle_exception(dbg_event: DEBUG_EVENT) -> Result<()> {
             // Exit debugger
             DebugSetProcessKillOnExit(false);
             DebugActiveProcessStop(dbg_event.dwProcessId);
+
+            return Ok(true);
         }
     }
+
+    warn!(address = ?info.ExceptionAddress, "Unexpected exception!");
 
     // SAFETY: If this isn't our exception, we mark it as unhandled
     unsafe {
@@ -238,5 +279,5 @@ fn __handle_exception(dbg_event: DEBUG_EVENT) -> Result<()> {
         )
     };
 
-    Ok(())
+    Ok(false)
 }
