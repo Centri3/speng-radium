@@ -37,8 +37,6 @@ fn attach() {
 
     trace!("`libradium.dll` has been loaded by SE");
 
-    info!("a");
-
     unsafe {
         if MessageBoxW(
             None,
@@ -75,10 +73,6 @@ fn attach() {
             }
         }
     }
-}
-
-fn detach() {
-    info!("libradium.dll is being detached from SE")
 }
 
 #[no_mangle]
