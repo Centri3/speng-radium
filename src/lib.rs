@@ -4,22 +4,18 @@ mod utils;
 use crate::utils::logging;
 use crate::utils::logging::SetupFile;
 use eyre::Result;
-use gag::Redirect;
 use path_clean::PathClean;
 use std::env;
 use std::ffi::c_void;
 use std::fs;
-use std::fs::File;
+use std::fs::DirEntry;
 use std::mem::size_of;
+use std::path::PathBuf;
 use std::thread::Builder;
 use steamworks::sys::SteamAPI_ISteamApps_GetCurrentBetaName;
-use steamworks::sys::SteamAPI_ISteamUGC_GetNumSubscribedItems;
-use steamworks::sys::SteamAPI_ISteamUGC_GetSubscribedItems;
 use steamworks::sys::SteamAPI_Init;
 use steamworks::sys::SteamAPI_Shutdown;
 use steamworks::sys::SteamAPI_SteamApps_v008;
-use steamworks::sys::SteamAPI_SteamUGC_v016;
-use steamworks::PublishedFileId;
 use tracing::info;
 use tracing::trace_span;
 use tracing::warn;
@@ -31,12 +27,10 @@ use windows::Win32::System::Diagnostics::ToolHelp::Thread32Next;
 use windows::Win32::System::Diagnostics::ToolHelp::TH32CS_SNAPTHREAD;
 use windows::Win32::System::Diagnostics::ToolHelp::THREADENTRY32;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
-use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::Threading::OpenThread;
 use windows::Win32::System::Threading::ResumeThread;
-use windows::Win32::System::Threading::TerminateProcess;
 use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
 use windows::Win32::UI::WindowsAndMessaging::MessageBoxW;
 use windows::Win32::UI::WindowsAndMessaging::MB_ICONWARNING;
@@ -84,7 +78,7 @@ fn __attach() -> Result<()> {
         SteamAPI_SteamApps_v008()
     };
 
-    let mut beta_name = ['\0'; 64usize];
+    let mut beta_name = [0u8; 64usize];
 
     let is_beta = unsafe {
         SteamAPI_ISteamApps_GetCurrentBetaName(
@@ -95,7 +89,7 @@ fn __attach() -> Result<()> {
     };
 
     // Convert beta_name to string
-    let beta_name = beta_name.iter().collect::<String>().replace('\0', "");
+    let beta_name = String::from_utf8(beta_name.to_vec())?.replace('\0', "");
 
     info!(%beta_name, is_beta);
 
@@ -108,7 +102,7 @@ fn __attach() -> Result<()> {
                 None,
                 w!(
                     "Please use either public or beta branch. Other branches are unsupported! \
-                     There may be bugs, or there may be not."
+                     There may be bugs, or there may not be."
                 ),
                 w!("Bad branch!"),
                 MB_OKCANCEL | MB_ICONWARNING,
@@ -116,10 +110,43 @@ fn __attach() -> Result<()> {
         };
     }
 
-    // FIXME: WE SHOULD DO THIS HERE INSTEAD. FIX STDOUT LATER
-    let items = ron::from_str::<Vec<u64>>(&fs::read_to_string("workshop_items.ron")?);
+    info!("Looking for addons folder");
 
-    info!(?items);
+    if cwd.join("../addons").clean().try_exists()? {
+        fn walk_dir(entry: &DirEntry, directories: &mut Vec<PathBuf>) -> Result<()> {
+            if entry.path().is_dir() {
+                directories.push(entry.path());
+
+                for entry in fs::read_dir(entry.path())? {
+                    let entry = entry?;
+
+                    walk_dir(&entry, directories)?;
+                }
+            }
+
+            Ok(())
+        }
+
+        // TODO: This should also read pak files, too. And the workshop...
+
+        let mut directories = vec![];
+
+        directories.push(cwd.join("../addons").clean());
+
+        info!("Found addons folder, iterating...");
+
+        for entry in fs::read_dir(cwd.join("../addons").clean())? {
+            let entry = entry?;
+
+            if entry.path().is_dir() {
+                walk_dir(&entry, &mut directories)?;
+            }
+        }
+
+        info!(?directories);
+    } else {
+        warn!("Could not find addons folder!")
+    }
 
     // Shutdown steam API
     unsafe { SteamAPI_Shutdown() };

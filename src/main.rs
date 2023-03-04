@@ -19,11 +19,6 @@ use std::mem::transmute;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
-use steamworks::sys::SteamAPI_ISteamUGC_GetNumSubscribedItems;
-use steamworks::sys::SteamAPI_ISteamUGC_GetSubscribedItems;
-use steamworks::sys::SteamAPI_Init;
-use steamworks::sys::SteamAPI_Shutdown;
-use steamworks::sys::SteamAPI_SteamUGC_v016;
 use tracing::info;
 use tracing::trace;
 use tracing::trace_span;
@@ -105,16 +100,6 @@ fn __start_modded_se() -> Result<WorkerGuard> {
 
     // Generate steam_appid.txt
     write!(File::create("steam_appid.txt")?, "314650")?;
-
-    // No idea why but accessing UGC in libradium segfaults. Nice.................
-    // FIXME: IT DOES THIS BECAUSE IT PRINTS TO STDOUT. I THINK.
-    let items = __get_workshop_items()?;
-
-    write!(
-        File::create("workshop_items.ron")?,
-        "{}",
-        ron::to_string(&items)?
-    )?;
 
     let mut cproc_event = DEBUG_EVENT::default();
 
@@ -252,28 +237,6 @@ fn __get_from_shortcut(lnk: &ShellLink) -> Result<PathBuf> {
 #[inline(always)]
 fn __get_from_cwd() -> Result<PathBuf> {
     Ok(env::current_dir()?.join("SpaceEngine.exe"))
-}
-
-#[inline(always)]
-fn __get_workshop_items() -> Result<Vec<u64>> {
-    unsafe { SteamAPI_Init() };
-
-    let ugc = unsafe { SteamAPI_SteamUGC_v016() };
-    let num_of_items = unsafe { SteamAPI_ISteamUGC_GetNumSubscribedItems(ugc) };
-
-    if num_of_items == 0u32 {
-        todo!();
-    }
-
-    let mut items = vec![0u64; num_of_items as usize];
-
-    // SAFETY: This will always contain every item, as we called
-    // GetNumSubscribedItems before
-    unsafe { SteamAPI_ISteamUGC_GetSubscribedItems(ugc, items.as_mut_ptr().cast(), num_of_items) };
-
-    unsafe { SteamAPI_Shutdown() };
-
-    Ok(items)
 }
 
 #[inline(always)]
