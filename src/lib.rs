@@ -82,11 +82,6 @@ extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: usize) -> bool {
             .name("dll-main".to_owned())
             .spawn(attach)
             .unwrap();
-    } else if reason == DLL_PROCESS_DETACH {
-        Builder::new()
-            .name("dll-main".to_owned())
-            .spawn(detach)
-            .unwrap();
     }
 
     true
