@@ -374,6 +374,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
 
 [[package]]
+name = "minhook-sys"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd5e3d769f50ac2ec0cbd86ec241d9aa219a080a74c0287ce781f46a8900fa18"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -637,6 +646,7 @@ dependencies = [
  "eyre",
  "if_chain",
  "lnk",
+ "minhook-sys",
  "mlua",
  "once_cell",
  "parking_lot",
@@ -649,6 +659,7 @@ dependencies = [
  "tracing-error",
  "tracing-subscriber",
  "windows",
+ "windows-sys",
 ]
 
 [[package]]

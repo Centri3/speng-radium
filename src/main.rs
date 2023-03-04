@@ -3,6 +3,8 @@
 mod build;
 mod utils;
 
+use crate::utils::__set_execute_breakpoint;
+use crate::utils::__unset_execute_breakpoint;
 use crate::utils::logging;
 use crate::utils::logging::SetupFile;
 use eyre::eyre;
@@ -30,15 +32,11 @@ use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Foundation::DBG_CONTINUE;
 use windows::Win32::Foundation::DBG_EXCEPTION_NOT_HANDLED;
 use windows::Win32::Foundation::EXCEPTION_SINGLE_STEP;
-use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Diagnostics::Debug::ContinueDebugEvent;
 use windows::Win32::System::Diagnostics::Debug::DebugActiveProcessStop;
 use windows::Win32::System::Diagnostics::Debug::DebugSetProcessKillOnExit;
-use windows::Win32::System::Diagnostics::Debug::GetThreadContext;
-use windows::Win32::System::Diagnostics::Debug::SetThreadContext;
 use windows::Win32::System::Diagnostics::Debug::WaitForDebugEvent;
 use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
-use windows::Win32::System::Diagnostics::Debug::CONTEXT as UNALIGNED_CONTEXT;
 use windows::Win32::System::Diagnostics::Debug::CREATE_PROCESS_DEBUG_EVENT;
 use windows::Win32::System::Diagnostics::Debug::CREATE_PROCESS_DEBUG_INFO;
 use windows::Win32::System::Diagnostics::Debug::DEBUG_EVENT;
@@ -59,20 +57,6 @@ use windows::Win32::System::Threading::SuspendThread;
 use windows::Win32::System::Threading::DEBUG_ONLY_THIS_PROCESS;
 use windows::Win32::System::Threading::DEBUG_PROCESS;
 use windows::Win32::System::Threading::DETACHED_PROCESS;
-
-const CONTEXT_AMD64: u32 = 0x00100000;
-// const CONTEXT_CONTROL: u32 = CONTEXT_AMD64 | 0x00000001;
-// const CONTEXT_INTEGER: u32 = CONTEXT_AMD64 | 0x00000002;
-// const CONTEXT_SEGMENTS: u32 = CONTEXT_AMD64 | 0x00000004;
-// const CONTEXT_FLOATING_POINT: u32 = CONTEXT_AMD64 | 0x00000008;
-const CONTEXT_DEBUG_REGISTERS: u32 = CONTEXT_AMD64 | 0x00000010;
-// const CONTEXT_FULL: u32 = CONTEXT_CONTROL | CONTEXT_INTEGER |
-// CONTEXT_FLOATING_POINT;
-
-#[allow(clippy::upper_case_acronyms)]
-#[repr(align(16))]
-#[derive(Default)]
-struct CONTEXT(UNALIGNED_CONTEXT);
 
 fn main() {
     // We must do this to use Result everywhere. If main returns Result, color-eyre
@@ -237,51 +221,6 @@ fn __get_from_shortcut(lnk: &ShellLink) -> Result<PathBuf> {
 #[inline(always)]
 fn __get_from_cwd() -> Result<PathBuf> {
     Ok(env::current_dir()?.join("SpaceEngine.exe"))
-}
-
-#[inline(always)]
-unsafe fn __set_execute_breakpoint(hthread: HANDLE, address: u64) -> Result<()> {
-    info!(address = ?address as *const c_void, "Setting execute breakpoint");
-
-    __update_context(hthread, |context| {
-        // Set debug register 0
-        context.Dr0 = address;
-        context.Dr7 |= 1u64;
-
-        Ok(())
-    })
-}
-
-#[inline(always)]
-unsafe fn __unset_execute_breakpoint(hthread: HANDLE) -> Result<()> {
-    info!("Unsetting execute breakpoint");
-
-    __update_context(hthread, |context| {
-        // Reset debug register 0
-        context.Dr0 = 0u64;
-        context.Dr7 |= 0u64;
-
-        Ok(())
-    })
-}
-
-#[inline(always)]
-unsafe fn __update_context<F>(hthread: HANDLE, update: F) -> Result<()>
-where
-    F: Fn(&mut UNALIGNED_CONTEXT) -> Result<()>,
-{
-    let mut context = CONTEXT(UNALIGNED_CONTEXT {
-        ContextFlags: CONTEXT_DEBUG_REGISTERS,
-        ..Default::default()
-    });
-
-    unsafe { GetThreadContext(hthread, &mut context.0) };
-
-    update(&mut context.0)?;
-
-    unsafe { SetThreadContext(hthread, &context.0) };
-
-    Ok(())
 }
 
 #[inline(always)]

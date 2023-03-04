@@ -3,13 +3,20 @@ mod utils;
 
 use crate::utils::logging;
 use crate::utils::logging::SetupFile;
+use eyre::eyre;
 use eyre::Result;
+use minhook_sys::MH_CreateHook;
+use minhook_sys::MH_EnableHook;
+use minhook_sys::MH_Initialize;
 use path_clean::PathClean;
+use std::arch::asm;
+use std::arch::global_asm;
 use std::env;
 use std::ffi::c_void;
 use std::fs;
 use std::fs::DirEntry;
 use std::mem::size_of;
+use std::mem::transmute;
 use std::path::PathBuf;
 use std::thread::Builder;
 use steamworks::sys::SteamAPI_ISteamApps_GetCurrentBetaName;
@@ -19,22 +26,36 @@ use steamworks::sys::SteamAPI_SteamApps_v008;
 use tracing::info;
 use tracing::trace_span;
 use tracing::warn;
+use windows::core::InParam;
+use windows::core::PCWSTR;
+use windows::s;
 use windows::w;
 use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Foundation::HINSTANCE;
+use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 use windows::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot;
 use windows::Win32::System::Diagnostics::ToolHelp::Thread32Next;
 use windows::Win32::System::Diagnostics::ToolHelp::TH32CS_SNAPTHREAD;
 use windows::Win32::System::Diagnostics::ToolHelp::THREADENTRY32;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::LibraryLoader::GetProcAddress;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
+use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::Threading::OpenThread;
 use windows::Win32::System::Threading::ResumeThread;
 use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
+use windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW;
 use windows::Win32::UI::WindowsAndMessaging::MessageBoxW;
+use windows::Win32::UI::WindowsAndMessaging::HMENU;
 use windows::Win32::UI::WindowsAndMessaging::MB_ICONWARNING;
 use windows::Win32::UI::WindowsAndMessaging::MB_OKCANCEL;
+use windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE;
+use windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE;
+use windows_sys::Win32::UI::WindowsAndMessaging::CreateWindowExW;
 
 #[no_mangle]
 unsafe extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: usize) -> bool {
@@ -110,54 +131,84 @@ fn __attach() -> Result<()> {
         };
     }
 
-    info!("Looking for addons folder");
+    type CreateWindowExWType = unsafe fn(
+        WINDOW_EX_STYLE,
+        PCWSTR,
+        PCWSTR,
+        WINDOW_STYLE,
+        i32,
+        i32,
+        i32,
+        i32,
+        HWND,
+        HMENU,
+        HINSTANCE,
+        Option<*const c_void>,
+    ) -> HWND;
 
-    if cwd.join("../addons").clean().try_exists()? {
-        fn walk_dir(entry: &DirEntry, directories: &mut Vec<PathBuf>) -> Result<()> {
-            if entry.path().is_dir() {
-                directories.push(entry.path());
+    static mut CreateWindowExW_original: *mut c_void = 0usize as *mut c_void;
+    static mut MAIN_HWND: HWND = HWND(0isize);
 
-                for entry in fs::read_dir(entry.path())? {
-                    let entry = entry?;
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn CreateWindowExW_hook(
+        dwexstyle: WINDOW_EX_STYLE, lpclassname: PCWSTR, lpwindowname: PCWSTR,
+        dwstyle: WINDOW_STYLE, x: i32, y: i32, nwidth: i32, nheight: i32, hwndparent: HWND,
+        hmenu: HMENU, hinstance: HINSTANCE, lpparam: Option<*const c_void>,
+    ) -> HWND {
+        let hwnd = transmute::<_, CreateWindowExWType>(CreateWindowExW_original)(
+            dwexstyle,
+            lpclassname,
+            lpwindowname,
+            dwstyle,
+            x,
+            y,
+            nwidth,
+            nheight,
+            hwndparent,
+            hmenu,
+            hinstance,
+            lpparam,
+        );
 
-                    walk_dir(&entry, directories)?;
-                }
-            }
+        // Get handle to the main SE window
+        if !lpwindowname.is_null() && lpwindowname.to_string().unwrap() == "SpaceEngine" {
+            std::fs::File::create(format!("{}", hwnd.0)).unwrap();
 
-            Ok(())
-        }
+            MAIN_HWND = hwnd;
+        };
 
-        // TODO: This should also read pak files, too. And the workshop...
-
-        let mut directories = vec![];
-
-        directories.push(cwd.join("../addons").clean());
-
-        info!("Found addons folder, iterating...");
-
-        for entry in fs::read_dir(cwd.join("../addons").clean())? {
-            let entry = entry?;
-
-            if entry.path().is_dir() {
-                walk_dir(&entry, &mut directories)?;
-            }
-        }
-
-        info!(?directories);
-    } else {
-        warn!("Could not find addons folder!");
+        hwnd
     }
+
+    unsafe { MH_Initialize() };
+
+    unsafe {
+        MH_CreateHook(
+            CreateWindowExW as *mut c_void,
+            CreateWindowExW_hook as *mut c_void,
+            &mut CreateWindowExW_original,
+        )
+    };
+
+    unsafe { MH_EnableHook(CreateWindowExW as *mut c_void) };
 
     // Shutdown steam API
     unsafe { SteamAPI_Shutdown() };
 
-    __resume_thread()?;
+    let hthread_main = __get_main_thread()?;
+
+    info!("Hooking SE's WNDPROC function");
+
+    unsafe { MH_Initialize() };
+
+    // Resume main thread of SE
+    unsafe { ResumeThread(hthread_main) };
 
     Ok(())
 }
 
 #[inline(always)]
-fn __resume_thread() -> Result<()> {
+fn __get_main_thread() -> Result<HANDLE> {
     unsafe {
         info!("Resuming main thread of SE");
 
@@ -186,13 +237,9 @@ fn __resume_thread() -> Result<()> {
 
             let hthread = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID)?;
 
-            ResumeThread(hthread);
-
-            CloseHandle(hthread);
-
-            break;
+            return Ok(hthread);
         }
     }
 
-    Ok(())
+    Err(eyre!("Could not find main thread of SE"))
 }
