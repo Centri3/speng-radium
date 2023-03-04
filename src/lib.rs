@@ -5,16 +5,22 @@ use crate::utils::logging;
 use crate::utils::logging::SetupFile;
 use ctor::ctor;
 use eyre::Result;
-use if_chain::if_chain;
+use path_clean::PathClean;
+use windows::Win32::Foundation::HINSTANCE;
+use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
+use std::env;
 use std::ffi::c_void;
 use std::mem::size_of;
+use std::thread::Builder;
 use steamworks::sys::SteamAPI_ISteamApps_GetCurrentBetaName;
+use steamworks::sys::SteamAPI_ISteamUGC_GetNumSubscribedItems;
+use steamworks::sys::SteamAPI_ISteamUGC_GetSubscribedItems;
 use steamworks::sys::SteamAPI_Init;
 use steamworks::sys::SteamAPI_Shutdown;
 use steamworks::sys::SteamAPI_SteamApps_v008;
-use steamworks::Client;
+use steamworks::sys::SteamAPI_SteamUGC_v016;
+use steamworks::PublishedFileId;
 use tracing::info;
-use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
 use windows::w;
@@ -31,27 +37,43 @@ use windows::Win32::System::Threading::ResumeThread;
 use windows::Win32::System::Threading::TerminateProcess;
 use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
 use windows::Win32::UI::WindowsAndMessaging::MessageBoxW;
-use windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR;
-use windows::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION;
 use windows::Win32::UI::WindowsAndMessaging::MB_ICONWARNING;
-use windows::Win32::UI::WindowsAndMessaging::MB_OK;
 use windows::Win32::UI::WindowsAndMessaging::MB_OKCANCEL;
-use windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_RESULT;
 
-#[ctor]
-fn ctor() {
-    // We must do this to use Result everywhere. If main returns Result, color-eyre
-    // won't catch it
-    __ctor().unwrap();
+#[no_mangle]
+unsafe extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: usize) -> bool {
+    if reason == DLL_PROCESS_ATTACH {
+        Builder::new()
+            .name("dll-main".to_owned())
+            .spawn(attach)
+            .unwrap();
+    }
+
+    true
 }
 
-fn __ctor() -> Result<()> {
+fn attach() {
     // Setup logging and retain the log file, panicking if it fails
     let _guard = logging::setup(&SetupFile::Retain);
+
+    // We must do this to use Result everywhere. If main returns Result, color-eyre
+    // won't catch it
+    let result = __attach();
+    // TODO: This should close SE if it unwraps.
+    result.unwrap();
+}
+
+fn __attach() -> Result<()> {
     // Create a span so we know what's from here
     let _span = trace_span!("libradium").entered();
 
     info!("I have been loaded by SE");
+
+    let cwd = env::current_dir()?;
+    let exe = env::current_exe()?;
+
+    info!(?cwd);
+    info!(?exe);
 
     // Setup steam API
     let apps = unsafe {
@@ -92,20 +114,44 @@ fn __ctor() -> Result<()> {
         };
     }
 
+    // let items = __get_workshop_items()?;
+
+    todo!();
+
     // Shutdown steam API
     unsafe { SteamAPI_Shutdown() };
 
-    __resume_thread();
+    __resume_thread()?;
 
     Ok(())
 }
 
 #[inline(always)]
-fn __resume_thread() {
+fn __get_workshop_items() -> Result<Vec<u64>> {
+    todo!();
+
+    let ugc = unsafe { SteamAPI_SteamUGC_v016() };
+    let num_of_items = unsafe { SteamAPI_ISteamUGC_GetNumSubscribedItems(ugc) };
+
+    if num_of_items == 0u32 {
+        todo!();
+    }
+
+    let mut items = vec![0u64; num_of_items as usize];
+
+    // SAFETY: This will always contain every item, as we called
+    // GetNumSubscribedItems before
+    unsafe { SteamAPI_ISteamUGC_GetSubscribedItems(ugc, items.as_mut_ptr().cast(), num_of_items) };
+
+    Ok(items)
+}
+
+#[inline(always)]
+fn __resume_thread() -> Result<()> {
     unsafe {
         info!("Resuming main thread of SE");
 
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0u32).unwrap();
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0u32)?;
         let mut entry = THREADENTRY32 {
             dwSize: size_of::<THREADENTRY32>() as u32,
             ..Default::default()
@@ -128,7 +174,7 @@ fn __resume_thread() {
             // This is cast to c_void so it prints as hex in the log. Probably unnecessary
             info!(tid = ?entry.th32ThreadID as *const c_void, "Found main thread of SE");
 
-            let hthread = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID).unwrap();
+            let hthread = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID)?;
 
             ResumeThread(hthread);
 
@@ -137,4 +183,6 @@ fn __resume_thread() {
             break;
         }
     }
+
+    Ok(())
 }

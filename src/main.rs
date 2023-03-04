@@ -23,6 +23,7 @@ use tracing::info;
 use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
+use tracing_appender::non_blocking::WorkerGuard;
 use windows::s;
 use windows::w;
 use windows::Win32::Foundation::CloseHandle;
@@ -76,16 +77,16 @@ struct CONTEXT(UNALIGNED_CONTEXT);
 fn main() {
     // We must do this to use Result everywhere. If main returns Result, color-eyre
     // won't catch it
-    __start_modded_se().expect("Failed to start modded SE");
+    let _guard = __start_modded_se().expect("Failed to start modded SE");
 }
 
 #[inline(always)]
-fn __start_modded_se() -> Result<()> {
+fn __start_modded_se() -> Result<WorkerGuard> {
     // We do this before setting up the log so we don't use the wrong cwd
     let path = __get_exe_path()?;
 
     // Setup logging and overwrite the log file, panicking if it fails
-    let _guard = logging::setup(&SetupFile::Overwrite);
+    let guard = logging::setup(&SetupFile::Overwrite);
     // Create a span so we know what's from the loader
     let _span = trace_span!("loader").entered();
 
@@ -189,7 +190,7 @@ fn __start_modded_se() -> Result<()> {
 
     info!("Debugger loop has been exited, loader's job is done");
 
-    Ok(())
+    Ok(guard)
 }
 
 #[inline(always)]
