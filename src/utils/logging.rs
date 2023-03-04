@@ -22,16 +22,16 @@ pub enum SetupFile {
 }
 
 #[inline]
-pub fn setup(setup_file: SetupFile) -> WorkerGuard {
+pub fn setup(setup_file: &SetupFile) -> WorkerGuard {
     try_setup(setup_file).expect("Failed to setup logging")
 }
 
 #[inline]
-pub fn try_setup(setup_file: SetupFile) -> Result<WorkerGuard> {
+pub fn try_setup(setup_file: &SetupFile) -> Result<WorkerGuard> {
     #[cfg(debug_assertions)]
     env::set_var("RUST_BACKTRACE", "full");
 
-    if setup_file == SetupFile::Overwrite {
+    if *setup_file == SetupFile::Overwrite {
         // We don't care if this fails, as it means the log didn't exist already
         _ = fs::remove_file("radium.log");
     }

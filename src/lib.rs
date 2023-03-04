@@ -28,7 +28,7 @@ use windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_RESULT;
 
 fn main() {
     // Setup logging and retain the log file, panicking if it fails
-    let _guard = logging::setup(SetupFile::Retain);
+    let _guard = logging::setup(&SetupFile::Retain);
 
     trace!("`libradium.dll` has been loaded by SE");
 
