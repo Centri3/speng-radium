@@ -5,12 +5,18 @@ use crate::utils::logging;
 use crate::utils::logging::SetupFile;
 use ctor::ctor;
 use eyre::Result;
+use if_chain::if_chain;
 use std::ffi::c_void;
 use std::mem::size_of;
+use steamworks::sys::SteamAPI_ISteamApps_GetCurrentBetaName;
+use steamworks::sys::SteamAPI_Init;
+use steamworks::sys::SteamAPI_Shutdown;
+use steamworks::sys::SteamAPI_SteamApps_v008;
 use steamworks::Client;
 use tracing::info;
 use tracing::trace;
 use tracing::trace_span;
+use tracing::warn;
 use windows::w;
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot;
@@ -25,7 +31,10 @@ use windows::Win32::System::Threading::ResumeThread;
 use windows::Win32::System::Threading::TerminateProcess;
 use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
 use windows::Win32::UI::WindowsAndMessaging::MessageBoxW;
+use windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR;
 use windows::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION;
+use windows::Win32::UI::WindowsAndMessaging::MB_ICONWARNING;
+use windows::Win32::UI::WindowsAndMessaging::MB_OK;
 use windows::Win32::UI::WindowsAndMessaging::MB_OKCANCEL;
 use windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_RESULT;
 
@@ -42,10 +51,49 @@ fn __ctor() -> Result<()> {
     // Create a span so we know what's from here
     let _span = trace_span!("libradium").entered();
 
-    // Setup steam api
-    let client = Client::init()?;
-
     info!("I have been loaded by SE");
+
+    // Setup steam API
+    let apps = unsafe {
+        SteamAPI_Init();
+
+        SteamAPI_SteamApps_v008()
+    };
+
+    let mut beta_name = ['\0'; 64usize];
+
+    let is_beta = unsafe {
+        SteamAPI_ISteamApps_GetCurrentBetaName(
+            apps,
+            beta_name.as_mut_ptr().cast(),
+            beta_name.len() as i32,
+        )
+    };
+
+    // Convert beta_name to string
+    let beta_name = beta_name.iter().collect::<String>().replace('\0', "");
+
+    info!(%beta_name, is_beta);
+
+    // TODO: This should be properly tested.
+    if !beta_name.is_empty() && beta_name != "beta" {
+        warn!("User is using a branch other than public or beta! This is unsupported.");
+
+        unsafe {
+            MessageBoxW(
+                None,
+                w!(
+                    "Please use either public or beta branch. Other branches are unsupported! \
+                     There may be bugs, or there may be not."
+                ),
+                w!("Bad branch!"),
+                MB_OKCANCEL | MB_ICONWARNING,
+            )
+        };
+    }
+
+    // Shutdown steam API
+    unsafe { SteamAPI_Shutdown() };
 
     __resume_thread();
 
@@ -63,7 +111,7 @@ fn __resume_thread() {
             ..Default::default()
         };
 
-        trace!("Snapped threads, iterating...");
+        info!("Snapped threads, iterating...");
 
         while Thread32Next(snapshot, &mut entry).as_bool() {
             // TODO: I don't think this is necessary
