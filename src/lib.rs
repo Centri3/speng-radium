@@ -145,7 +145,7 @@ fn __attach() -> Result<()> {
 
         info!(?directories);
     } else {
-        warn!("Could not find addons folder!")
+        warn!("Could not find addons folder!");
     }
 
     // Shutdown steam API

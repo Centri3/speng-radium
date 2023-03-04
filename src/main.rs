@@ -345,7 +345,7 @@ fn __handle_exception(
         // Suspend main thread. This will be resumed by the dll later
         SuspendThread(cproc_info.hThread);
 
-        let dll = r"libradium.dll".as_bytes();
+        let dll = b"libradium.dll";
 
         // SAFETY: Checking if this is NULL guarantees this is safe, as the memory will
         // always be allocated
