@@ -69,7 +69,8 @@ unsafe extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: usize) -> bool {
     true
 }
 
-// TODO: If this panics or otherwise crashes, it sometimes won't finish logging. This makes debugging a pain...
+// TODO: If this panics or otherwise crashes, it sometimes won't finish logging.
+// This makes debugging a pain...
 fn attach() {
     // Setup logging and retain the log file, panicking if it fails
     let _guard = logging::setup(&SetupFile::Retain);
@@ -147,10 +148,12 @@ fn __attach() -> Result<()> {
         Option<*const c_void>,
     ) -> HWND;
 
+    #[allow(non_upper_case_globals)]
     static mut CreateWindowExW_original: *mut c_void = 0usize as *mut c_void;
     static mut MAIN_HWND: HWND = HWND(0isize);
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(non_snake_case)]
     pub unsafe fn CreateWindowExW_hook(
         dwexstyle: WINDOW_EX_STYLE, lpclassname: PCWSTR, lpwindowname: PCWSTR,
         dwstyle: WINDOW_STYLE, x: i32, y: i32, nwidth: i32, nheight: i32, hwndparent: HWND,
@@ -173,8 +176,6 @@ fn __attach() -> Result<()> {
 
         // Get handle to the main SE window
         if !lpwindowname.is_null() && lpwindowname.to_string().unwrap() == "SpaceEngine" {
-            std::fs::File::create(format!("{}", hwnd.0)).unwrap();
-
             MAIN_HWND = hwnd;
         };
 
@@ -198,12 +199,17 @@ fn __attach() -> Result<()> {
 
     let hthread_main = __get_main_thread()?;
 
-    info!("Hooking SE's WNDPROC function");
-
-    unsafe { MH_Initialize() };
-
     // Resume main thread of SE
     unsafe { ResumeThread(hthread_main) };
+
+    while unsafe { MAIN_HWND } == HWND(0isize) {
+        std::thread::sleep(std::time::Duration::from_secs(1u64))
+    }
+
+    info!("Hooking SE's WNDPROC function");
+
+    info!("{}", unsafe { MAIN_HWND.0 });
+    info!("b");
 
     Ok(())
 }
