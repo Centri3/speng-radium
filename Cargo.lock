@@ -170,6 +170,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctor"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d2301688392eb071b0bf1a37be05c469d3cc4dbbd95df672fe28ab021e6a096"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "cxx"
 version = "1.0.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -617,6 +627,7 @@ dependencies = [
  "bitflags",
  "bytemuck",
  "color-eyre",
+ "ctor",
  "eyre",
  "if_chain",
  "lnk",
@@ -625,12 +636,31 @@ dependencies = [
  "parking_lot",
  "path-clean",
  "serde",
+ "steamworks",
  "tracing",
  "tracing-appender",
  "tracing-error",
  "tracing-subscriber",
  "windows",
 ]
+
+[[package]]
+name = "steamworks"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2728e9e381f0b2bba62d871c4fe352c5a234c455491fb60029fe3c7a5795258d"
+dependencies = [
+ "bitflags",
+ "lazy_static",
+ "steamworks-sys",
+ "thiserror",
+]
+
+[[package]]
+name = "steamworks-sys"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b487041f3605bd8536079fc456c263ee6300a736b00c9bffdeec65328dbe4f3"
 
 [[package]]
 name = "syn"
@@ -650,6 +680,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be55cf8942feac5c765c2c993422806843c9a9a45d4d5c407ad6dd2ea95eb9b6"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "thiserror"
+version = "1.0.38"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a9cd18aa97d5c45c6603caea1da6628790b37f7a34b6ca89522331c5180fed0"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.38"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fb327af4685e4d03fa8cbcf1716380da910eeb2bb8be417e7f9fd3fb164f36f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

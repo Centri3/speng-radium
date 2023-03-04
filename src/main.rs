@@ -74,7 +74,8 @@ const CONTEXT_DEBUG_REGISTERS: u32 = CONTEXT_AMD64 | 0x00000010;
 struct CONTEXT(UNALIGNED_CONTEXT);
 
 fn main() {
-    // We must do this to use Result everywhere
+    // We must do this to use Result everywhere. If main returns Result, color-eyre
+    // won't catch it
     __start_modded_se().expect("Failed to start modded SE");
 }
 
