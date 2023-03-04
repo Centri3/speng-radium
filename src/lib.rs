@@ -5,7 +5,9 @@ use crate::utils::logging;
 use crate::utils::logging::SetupFile;
 use std::mem::size_of;
 use std::thread::Builder;
+use tracing::info;
 use tracing::trace;
+use tracing::trace_span;
 use windows::w;
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Foundation::HINSTANCE;
@@ -14,6 +16,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::Thread32Next;
 use windows::Win32::System::Diagnostics::ToolHelp::TH32CS_SNAPTHREAD;
 use windows::Win32::System::Diagnostics::ToolHelp::THREADENTRY32;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
+use windows::Win32::System::SystemServices::DLL_PROCESS_DETACH;
 use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -26,11 +29,15 @@ use windows::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION;
 use windows::Win32::UI::WindowsAndMessaging::MB_OKCANCEL;
 use windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_RESULT;
 
-fn main() {
+fn attach() {
     // Setup logging and retain the log file, panicking if it fails
     let _guard = logging::setup(&SetupFile::Retain);
+    // Create a span so we know what's from here
+    let _span = trace_span!("libradium").entered();
 
     trace!("`libradium.dll` has been loaded by SE");
+
+    info!("a");
 
     unsafe {
         if MessageBoxW(
@@ -68,8 +75,10 @@ fn main() {
             }
         }
     }
+}
 
-    panic!();
+fn detach() {
+    info!("libradium.dll is being detached from SE")
 }
 
 #[no_mangle]
@@ -77,7 +86,12 @@ extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: usize) -> bool {
     if reason == DLL_PROCESS_ATTACH {
         Builder::new()
             .name("dll-main".to_owned())
-            .spawn(main)
+            .spawn(attach)
+            .unwrap();
+    } else if reason == DLL_PROCESS_DETACH {
+        Builder::new()
+            .name("dll-main".to_owned())
+            .spawn(detach)
             .unwrap();
     }
 

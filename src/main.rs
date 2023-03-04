@@ -54,6 +54,7 @@ use windows::Win32::System::Threading::CreateRemoteThread;
 use windows::Win32::System::Threading::GetExitCodeProcess;
 use windows::Win32::System::Threading::GetProcessId;
 use windows::Win32::System::Threading::GetThreadId;
+use windows::Win32::System::Threading::SuspendThread;
 use windows::Win32::System::Threading::DEBUG_ONLY_THIS_PROCESS;
 use windows::Win32::System::Threading::DEBUG_PROCESS;
 use windows::Win32::System::Threading::DETACHED_PROCESS;
@@ -339,6 +340,9 @@ fn __handle_exception(
     trace!("Our breakpoint has been hit");
 
     unsafe {
+        // Suspend main thread. This will be resumed by the dll later
+        SuspendThread(cproc_info.hThread);
+
         let dll = r"libradium.dll".as_bytes();
 
         // SAFETY: Checking if this is NULL guarantees this is safe, as the memory will
