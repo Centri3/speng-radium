@@ -3,13 +3,13 @@ mod utils;
 
 use crate::utils::logging;
 use crate::utils::logging::SetupFile;
-use ctor::ctor;
 use eyre::Result;
+use gag::Redirect;
 use path_clean::PathClean;
-use windows::Win32::Foundation::HINSTANCE;
-use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use std::env;
 use std::ffi::c_void;
+use std::fs;
+use std::fs::File;
 use std::mem::size_of;
 use std::thread::Builder;
 use steamworks::sys::SteamAPI_ISteamApps_GetCurrentBetaName;
@@ -25,10 +25,12 @@ use tracing::trace_span;
 use tracing::warn;
 use windows::w;
 use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::Foundation::HINSTANCE;
 use windows::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot;
 use windows::Win32::System::Diagnostics::ToolHelp::Thread32Next;
 use windows::Win32::System::Diagnostics::ToolHelp::TH32CS_SNAPTHREAD;
 use windows::Win32::System::Diagnostics::ToolHelp::THREADENTRY32;
+use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -114,9 +116,10 @@ fn __attach() -> Result<()> {
         };
     }
 
-    // let items = __get_workshop_items()?;
+    // FIXME: WE SHOULD DO THIS HERE INSTEAD. FIX STDOUT LATER
+    let items = ron::from_str::<Vec<u64>>(&fs::read_to_string("workshop_items.ron")?);
 
-    todo!();
+    info!(?items);
 
     // Shutdown steam API
     unsafe { SteamAPI_Shutdown() };
@@ -124,26 +127,6 @@ fn __attach() -> Result<()> {
     __resume_thread()?;
 
     Ok(())
-}
-
-#[inline(always)]
-fn __get_workshop_items() -> Result<Vec<u64>> {
-    todo!();
-
-    let ugc = unsafe { SteamAPI_SteamUGC_v016() };
-    let num_of_items = unsafe { SteamAPI_ISteamUGC_GetNumSubscribedItems(ugc) };
-
-    if num_of_items == 0u32 {
-        todo!();
-    }
-
-    let mut items = vec![0u64; num_of_items as usize];
-
-    // SAFETY: This will always contain every item, as we called
-    // GetNumSubscribedItems before
-    unsafe { SteamAPI_ISteamUGC_GetSubscribedItems(ugc, items.as_mut_ptr().cast(), num_of_items) };
-
-    Ok(items)
 }
 
 #[inline(always)]
