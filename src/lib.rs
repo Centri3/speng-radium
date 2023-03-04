@@ -48,6 +48,7 @@ unsafe extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: usize) -> bool {
     true
 }
 
+// TODO: If this panics or otherwise crashes, it sometimes won't finish logging. This makes debugging a pain...
 fn attach() {
     // Setup logging and retain the log file, panicking if it fails
     let _guard = logging::setup(&SetupFile::Retain);
