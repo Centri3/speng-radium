@@ -3,6 +3,7 @@ use eyre::Result;
 use eyre::WrapErr;
 use std::env;
 use std::fs;
+use std::io::stdout;
 use std::panic;
 use tracing::error;
 use tracing_appender::non_blocking::NonBlocking;
@@ -48,7 +49,9 @@ pub fn try_setup(setup_file: &SetupFile) -> Result<WorkerGuard> {
 
 #[inline(always)]
 fn __setup_tracing(log_file: NonBlocking) -> Result<()> {
-    let fmt_layer = fmt::layer().with_writer(log_file).with_thread_names(true);
+    let fmt_layer = fmt::layer()
+        .with_writer(log_file.and(stdout))
+        .with_thread_names(true);
 
     registry()
         .with(ErrorLayer::default())

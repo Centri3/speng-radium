@@ -29,9 +29,11 @@ use windows::core::PCWSTR;
 use windows::s;
 use windows::w;
 use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::Foundation::GetLastError;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Foundation::HINSTANCE;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Console::AllocConsole;
 use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 use windows::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot;
 use windows::Win32::System::Diagnostics::ToolHelp::Thread32Next;
@@ -45,6 +47,7 @@ use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::Threading::OpenThread;
 use windows::Win32::System::Threading::ResumeThread;
+use windows::Win32::System::Threading::THREAD_ALL_ACCESS;
 use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
 use windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW;
 use windows::Win32::UI::WindowsAndMessaging::MessageBoxW;
@@ -93,9 +96,19 @@ fn __attach() -> Result<()> {
 
     info!("I have been loaded by SE");
 
-    let hthread_main = __get_main_thread()?;
+    let hthread_main = unsafe {
+        OpenThread(
+            THREAD_ALL_ACCESS,
+            false,
+            fs::read_to_string("mainthread")?.parse::<u32>()?,
+        )?
+    };
+
+    fs::remove_file("mainthread")?;
 
     unsafe { ResumeThread(hthread_main) };
+
+    info!("{:?}", unsafe { GetLastError() });
 
     return Ok(());
 
@@ -218,51 +231,14 @@ fn __attach() -> Result<()> {
     // Shutdown steam API
     unsafe { SteamAPI_Shutdown() };
 
-    let hthread_main = __get_main_thread()?;
+    // let hthread_main = todo!();
 
-    // Resume main thread of SE
-    unsafe { ResumeThread(hthread_main) };
+    // // Resume main thread of SE
+    // unsafe { ResumeThread(hthread_main) };
 
     info!("Hooking SE's WNDPROC function");
 
     info!("b");
 
     Ok(())
-}
-
-#[inline(always)]
-fn __get_main_thread() -> Result<HANDLE> {
-    unsafe {
-        info!("Resuming main thread of SE");
-
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0u32)?;
-        let mut entry = THREADENTRY32 {
-            dwSize: size_of::<THREADENTRY32>() as u32,
-            ..Default::default()
-        };
-
-        info!("Snapped threads, iterating...");
-
-        while Thread32Next(snapshot, &mut entry).as_bool() {
-            // TODO: I don't think this is necessary
-            entry.dwSize = size_of::<THREADENTRY32>() as u32;
-
-            // There's only our thread and the main thread when this is ran, so we just
-            // resume the first one where this isn't true
-            if entry.th32OwnerProcessID != GetCurrentProcessId()
-                || entry.th32ThreadID == GetCurrentThreadId()
-            {
-                continue;
-            }
-
-            // This is cast to c_void so it prints as hex in the log. Probably unnecessary
-            info!(tid = ?entry.th32ThreadID as *const c_void, "Found main thread of SE");
-
-            let hthread = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID)?;
-
-            return Ok(hthread);
-        }
-    }
-
-    Err(eyre!("Could not find main thread of SE"))
 }

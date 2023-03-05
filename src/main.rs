@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![feature(windows_process_extensions_main_thread_handle)]
 
 mod build;
 mod utils;
@@ -12,9 +13,12 @@ use if_chain::if_chain;
 use lnk::ShellLink;
 use std::env;
 use std::fs;
+use std::fs::File;
+use std::io::Write;
 use std::mem::transmute;
 use std::os::windows::prelude::AsRawHandle;
 use std::os::windows::prelude::OwnedHandle;
+use std::os::windows::process::ChildExt;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -32,8 +36,8 @@ use windows::Win32::System::Memory::MEM_COMMIT;
 use windows::Win32::System::Memory::MEM_RESERVE;
 use windows::Win32::System::Memory::PAGE_READWRITE;
 use windows::Win32::System::Threading::CreateRemoteThread;
+use windows::Win32::System::Threading::GetThreadId;
 use windows::Win32::System::Threading::CREATE_SUSPENDED;
-use windows::Win32::System::Threading::DETACHED_PROCESS;
 use windows::Win32::System::Threading::THREAD_CREATE_RUN_IMMEDIATELY;
 
 // Name of our DLL we inject into SE
@@ -58,14 +62,16 @@ fn __start_modded_se() -> Result<WorkerGuard> {
     info!("Starting modded SE");
 
     // Start SE in a suspended state, and get an OwnedHandle to it
-    let hprocess: OwnedHandle = Command::new(path)
-        .creation_flags(DETACHED_PROCESS.0 | CREATE_SUSPENDED.0)
+    let child = Command::new(path)
+        .creation_flags(CREATE_SUSPENDED.0)
         .spawn()
-        .wrap_err("Starting `SpaceEngine.exe` failed")?
-        .into();
+        .wrap_err("Starting `SpaceEngine.exe` failed")?;
 
-    // Use shadowing to cleanly convert our OwnedHandle to HANDLE
-    let hprocess = HANDLE(hprocess.as_raw_handle() as isize);
+    let hprocess = HANDLE(child.as_raw_handle() as isize);
+
+    write!(File::create("mainthread")?, "{}", unsafe {
+        GetThreadId(HANDLE(child.main_thread_handle().as_raw_handle() as isize))
+    })?;
 
     unsafe {
         let alloc = VirtualAllocEx(
