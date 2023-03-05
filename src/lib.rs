@@ -6,6 +6,7 @@ use crate::utils::logging::SetupFile;
 use detour::static_detour;
 use eyre::eyre;
 use eyre::Result;
+use gag::Redirect;
 use path_clean::PathClean;
 use std::arch::asm;
 use std::arch::global_asm;
@@ -13,14 +14,17 @@ use std::env;
 use std::ffi::c_void;
 use std::fs;
 use std::fs::DirEntry;
+use std::fs::File;
 use std::mem::size_of;
 use std::mem::transmute;
 use std::path::PathBuf;
 use std::thread::Builder;
 use steamworks::sys::SteamAPI_ISteamApps_GetCurrentBetaName;
 use steamworks::sys::SteamAPI_Init;
+use steamworks::sys::SteamAPI_RestartAppIfNecessary;
 use steamworks::sys::SteamAPI_Shutdown;
 use steamworks::sys::SteamAPI_SteamApps_v008;
+use steamworks::sys::SteamAPI_SteamUGC_v016;
 use tracing::info;
 use tracing::trace_span;
 use tracing::warn;
@@ -41,6 +45,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::TH32CS_SNAPTHREAD;
 use windows::Win32::System::Diagnostics::ToolHelp::THREADENTRY32;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::LibraryLoader::GetProcAddress;
+use windows::Win32::System::Memory::VirtualFree;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::System::Threading::GetCurrentProcessId;
@@ -85,9 +90,7 @@ fn attach() {
 
     // We must do this to use Result everywhere. If main returns Result, color-eyre
     // won't catch it
-    let result = __attach();
-    // TODO: This should close SE if it unwraps.
-    result.unwrap();
+    __attach().unwrap();
 }
 
 fn __attach() -> Result<()> {
@@ -96,149 +99,20 @@ fn __attach() -> Result<()> {
 
     info!("I have been loaded by SE");
 
-    let hthread_main = unsafe {
-        OpenThread(
-            THREAD_ALL_ACCESS,
-            false,
-            fs::read_to_string("mainthread")?.parse::<u32>()?,
-        )?
-    };
-
-    fs::remove_file("mainthread")?;
-
-    unsafe { ResumeThread(hthread_main) };
-
-    info!("{:?}", unsafe { GetLastError() });
-
-    return Ok(());
-
-    let cwd = env::current_dir()?;
-    let exe = env::current_exe()?;
-
-    info!(?cwd);
-    info!(?exe);
-
-    // Setup steam API
-    let apps = unsafe {
-        SteamAPI_Init();
-
-        SteamAPI_SteamApps_v008()
-    };
-
-    let mut beta_name = [0u8; 64usize];
-
-    let is_beta = unsafe {
-        SteamAPI_ISteamApps_GetCurrentBetaName(
-            apps,
-            beta_name.as_mut_ptr().cast(),
-            beta_name.len() as i32,
-        )
-    };
-
-    // Convert beta_name to string
-    let beta_name = String::from_utf8(beta_name.to_vec())?.replace('\0', "");
-
-    info!(%beta_name, is_beta);
-
-    // TODO: This should be properly tested.
-    if !beta_name.is_empty() && beta_name != "beta" {
-        warn!("User is using a branch other than public or beta! This is unsupported.");
-
-        unsafe {
-            MessageBoxW(
-                None,
-                w!(
-                    "Please use either public or beta branch. Other branches are unsupported! \
-                     There may be bugs, or there may not."
-                ),
-                w!("Bad branch!"),
-                MB_OKCANCEL | MB_ICONWARNING,
-            )
-        };
-    }
-
-    unsafe fn CreateWindowExWDetour(
-        dwexstyle: WINDOW_EX_STYLE, lpclassname: PCWSTR, lpwindowname: PCWSTR,
-        dwstyle: WINDOW_STYLE, x: i32, y: i32, nwidth: i32, nheight: i32, hwndparent: HWND,
-        hmenu: HMENU, hinstance: HINSTANCE, lpparam: *const c_void,
-    ) -> HWND {
-        let hwnd = CreateWindowExWHook.call(
-            dwexstyle,
-            lpclassname,
-            lpwindowname,
-            dwstyle,
-            x,
-            y,
-            nwidth,
-            nheight,
-            hwndparent,
-            hmenu,
-            hinstance,
-            lpparam,
-        );
-
-        if !lpwindowname.is_null() && lpwindowname.to_string().unwrap() == "SpaceEngine" {
-            Builder::new()
-                .name("dll-main".to_owned())
-                .spawn(attach)
-                .unwrap();
-        }
-
-        hwnd
-    }
-
+    // Resume the main thread of SE
     unsafe {
-        CreateWindowExWHook
-            .initialize(
-                transmute::<_, FnCreateWindowExW>(
-                    GetProcAddress(
-                        GetModuleHandleW(w!("user32.dll")).unwrap(),
-                        s!("CreateWindowExW"),
-                    )
-                    .unwrap(),
-                ),
-                |dwexstyle,
-                 lpclassname,
-                 lpwindowname,
-                 dwstyle,
-                 x,
-                 y,
-                 nwidth,
-                 nheight,
-                 hwndparent,
-                 hmenu,
-                 hinstance,
-                 lpparam| {
-                    CreateWindowExWDetour(
-                        dwexstyle,
-                        lpclassname,
-                        lpwindowname,
-                        dwstyle,
-                        x,
-                        y,
-                        nwidth,
-                        nheight,
-                        hwndparent,
-                        hmenu,
-                        hinstance,
-                        lpparam,
-                    )
-                },
-            )?
-            .enable()?
-    };
+        assert_ne!(
+            ResumeThread(OpenThread(
+                THREAD_SUSPEND_RESUME,
+                false,
+                fs::read_to_string("mainthread")?.parse::<u32>()?,
+            )?),
+            u32::MAX
+        );
+    }
 
-    // Shutdown steam API
-    unsafe { SteamAPI_Shutdown() };
-
-    // let hthread_main = todo!();
-
-    // // Resume main thread of SE
-    // unsafe { ResumeThread(hthread_main) };
-
-    info!("Hooking SE's WNDPROC function");
-
-    info!("b");
+    // Clean up
+    fs::remove_file("mainthread")?;
 
     Ok(())
 }

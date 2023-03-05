@@ -17,11 +17,11 @@ use std::fs::File;
 use std::io::Write;
 use std::mem::transmute;
 use std::os::windows::prelude::AsRawHandle;
-use std::os::windows::prelude::OwnedHandle;
 use std::os::windows::process::ChildExt;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
+use tracing::debug;
 use tracing::info;
 use tracing::trace_span;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -37,8 +37,11 @@ use windows::Win32::System::Memory::MEM_RESERVE;
 use windows::Win32::System::Memory::PAGE_READWRITE;
 use windows::Win32::System::Threading::CreateRemoteThread;
 use windows::Win32::System::Threading::GetThreadId;
+use windows::Win32::System::Threading::OpenThread;
+use windows::Win32::System::Threading::ResumeThread;
 use windows::Win32::System::Threading::CREATE_SUSPENDED;
-use windows::Win32::System::Threading::THREAD_CREATE_RUN_IMMEDIATELY;
+use windows::Win32::System::Threading::THREAD_CREATE_SUSPENDED;
+use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
 
 // Name of our DLL we inject into SE
 const DLL_NAME: &[u8] = b"libradium.dll";
@@ -61,38 +64,49 @@ fn __start_modded_se() -> Result<WorkerGuard> {
 
     info!("Starting modded SE");
 
-    // Start SE in a suspended state, and get an OwnedHandle to it
+    // Start SE in a suspended state...
     let child = Command::new(path)
         .creation_flags(CREATE_SUSPENDED.0)
         .spawn()
         .wrap_err("Starting `SpaceEngine.exe` failed")?;
 
+    // ...And get a HANDLE to it...
     let hprocess = HANDLE(child.as_raw_handle() as isize);
 
-    write!(File::create("mainthread")?, "{}", unsafe {
-        GetThreadId(HANDLE(child.main_thread_handle().as_raw_handle() as isize))
-    })?;
+    // ...Finally, extract the tid of the main thread of SE
+    let main_tid =
+        unsafe { GetThreadId(HANDLE(child.main_thread_handle().as_raw_handle() as isize)) };
 
+    debug!(tid = format_args!("{main_tid:x}"), "Found main thread of SE");
+
+    // FIXME: This is never freed. Does it matter? Nah.
+    let alloc = unsafe {
+        VirtualAllocEx(hprocess, None, DLL_NAME.len(), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)
+    };
+
+    debug!(
+        ?alloc,
+        DLL_NAME = String::from_utf8(DLL_NAME.to_vec())?,
+        "Allocated new memory into SE for `DLL_NAME`"
+    );
+
+    assert!(!alloc.is_null());
+
+    // SAFETY: This is safe, as we already catch if VirtualAllocEx fails
     unsafe {
-        let alloc = VirtualAllocEx(
-            hprocess,
-            None,
-            DLL_NAME.len(),
-            MEM_RESERVE | MEM_COMMIT,
-            PAGE_READWRITE,
-        );
+        WriteProcessMemory(hprocess, alloc, DLL_NAME.as_ptr().cast(), DLL_NAME.len(), None)
+            .expect("Writing to `alloc` failed");
+    }
 
-        // SAFETY: This is safe, as if VirtualAllocEx fails, it'll return NULL, which
-        // will cause this to fail, but safely.
-        WriteProcessMemory(
-            hprocess,
-            alloc,
-            DLL_NAME.as_ptr().cast(),
-            DLL_NAME.len(),
-            None,
-        )
-        .unwrap();
+    debug!(
+        ?alloc,
+        DLL_NAME = String::from_utf8(DLL_NAME.to_vec())?,
+        "Successfully wrote `DLL_NAME` to `alloc`"
+    );
 
+    let mut tid = 0u32;
+
+    let hthread = unsafe {
         CreateRemoteThread(
             hprocess,
             None,
@@ -111,11 +125,22 @@ fn __start_modded_se() -> Result<WorkerGuard> {
             ),
             // Provide the name of our dll to LoadLibraryA
             Some(alloc),
-            THREAD_CREATE_RUN_IMMEDIATELY.0,
-            None,
+            THREAD_CREATE_SUSPENDED.0,
+            Some(&mut tid),
         )
-        .expect("TODO:");
-    }
+        .expect("Failed to create new thread in SE");
+
+        OpenThread(THREAD_SUSPEND_RESUME, false, tid)?
+    };
+
+    debug!(tid = format_args!("{tid:x}"), "Created new thread in SE");
+
+    // I would rather send this directly to libradium.dll, but we can't. So we do
+    // this instead.
+    write!(File::create("mainthread")?, "{main_tid}")?;
+
+    // SAFETY: If our libradium.dll is safe, then this is safe.
+    unsafe { ResumeThread(hthread) };
 
     Ok(guard)
 }
