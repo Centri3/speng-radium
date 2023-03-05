@@ -3,11 +3,9 @@ mod utils;
 
 use crate::utils::logging;
 use crate::utils::logging::SetupFile;
+use detour::static_detour;
 use eyre::eyre;
 use eyre::Result;
-use minhook_sys::MH_CreateHook;
-use minhook_sys::MH_EnableHook;
-use minhook_sys::MH_Initialize;
 use path_clean::PathClean;
 use std::arch::asm;
 use std::arch::global_asm;
@@ -56,6 +54,13 @@ use windows::Win32::UI::WindowsAndMessaging::MB_OKCANCEL;
 use windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE;
 use windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE;
 use windows_sys::Win32::UI::WindowsAndMessaging::CreateWindowExW;
+
+static_detour! {
+    static CreateWindowExWHook: unsafe extern "system" fn(WINDOW_EX_STYLE, PCWSTR, PCWSTR, WINDOW_STYLE, i32, i32, i32, i32, HWND, HMENU, HINSTANCE, *const c_void) -> HWND;
+}
+
+#[rustfmt::skip]
+type FnCreateWindowExW = unsafe extern "system" fn(WINDOW_EX_STYLE, PCWSTR, PCWSTR, WINDOW_STYLE, i32, i32, i32, i32, HWND, HMENU, HINSTANCE, *const c_void) -> HWND;
 
 #[no_mangle]
 unsafe extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: usize) -> bool {
@@ -125,7 +130,7 @@ fn __attach() -> Result<()> {
                 None,
                 w!(
                     "Please use either public or beta branch. Other branches are unsupported! \
-                     There may be bugs, or there may not be."
+                     There may be bugs, or there may not."
                 ),
                 w!("Bad branch!"),
                 MB_OKCANCEL | MB_ICONWARNING,
@@ -133,33 +138,12 @@ fn __attach() -> Result<()> {
         };
     }
 
-    type CreateWindowExWType = unsafe fn(
-        WINDOW_EX_STYLE,
-        PCWSTR,
-        PCWSTR,
-        WINDOW_STYLE,
-        i32,
-        i32,
-        i32,
-        i32,
-        HWND,
-        HMENU,
-        HINSTANCE,
-        Option<*const c_void>,
-    ) -> HWND;
-
-    #[allow(non_upper_case_globals)]
-    static mut CreateWindowExW_original: *mut c_void = 0usize as *mut c_void;
-    static mut MAIN_HWND: HWND = HWND(0isize);
-
-    #[allow(clippy::too_many_arguments)]
-    #[allow(non_snake_case)]
-    pub unsafe fn CreateWindowExW_hook(
+    unsafe fn CreateWindowExWDetour(
         dwexstyle: WINDOW_EX_STYLE, lpclassname: PCWSTR, lpwindowname: PCWSTR,
         dwstyle: WINDOW_STYLE, x: i32, y: i32, nwidth: i32, nheight: i32, hwndparent: HWND,
-        hmenu: HMENU, hinstance: HINSTANCE, lpparam: Option<*const c_void>,
+        hmenu: HMENU, hinstance: HINSTANCE, lpparam: *const c_void,
     ) -> HWND {
-        let hwnd = transmute::<_, CreateWindowExWType>(CreateWindowExW_original)(
+        let hwnd = CreateWindowExWHook.call(
             dwexstyle,
             lpclassname,
             lpwindowname,
@@ -174,25 +158,53 @@ fn __attach() -> Result<()> {
             lpparam,
         );
 
-        // Get handle to the main SE window
         if !lpwindowname.is_null() && lpwindowname.to_string().unwrap() == "SpaceEngine" {
-            MAIN_HWND = hwnd;
-        };
+            std::fs::File::create(format!("{}", hwnd.0)).unwrap();
+        }
 
         hwnd
     }
 
-    unsafe { MH_Initialize() };
-
     unsafe {
-        MH_CreateHook(
-            CreateWindowExW as *mut c_void,
-            CreateWindowExW_hook as *mut c_void,
-            &mut CreateWindowExW_original,
-        )
+        CreateWindowExWHook
+            .initialize(
+                transmute::<_, FnCreateWindowExW>(
+                    GetProcAddress(
+                        GetModuleHandleW(w!("user32.dll")).unwrap(),
+                        s!("CreateWindowExW"),
+                    )
+                    .unwrap(),
+                ),
+                |dwexstyle,
+                 lpclassname,
+                 lpwindowname,
+                 dwstyle,
+                 x,
+                 y,
+                 nwidth,
+                 nheight,
+                 hwndparent,
+                 hmenu,
+                 hinstance,
+                 lpparam| {
+                    CreateWindowExWDetour(
+                        dwexstyle,
+                        lpclassname,
+                        lpwindowname,
+                        dwstyle,
+                        x,
+                        y,
+                        nwidth,
+                        nheight,
+                        hwndparent,
+                        hmenu,
+                        hinstance,
+                        lpparam,
+                    )
+                },
+            )?
+            .enable()?
     };
-
-    unsafe { MH_EnableHook(CreateWindowExW as *mut c_void) };
 
     // Shutdown steam API
     unsafe { SteamAPI_Shutdown() };
@@ -202,13 +214,8 @@ fn __attach() -> Result<()> {
     // Resume main thread of SE
     unsafe { ResumeThread(hthread_main) };
 
-    while unsafe { MAIN_HWND } == HWND(0isize) {
-        std::thread::sleep(std::time::Duration::from_secs(1u64))
-    }
-
     info!("Hooking SE's WNDPROC function");
 
-    info!("{}", unsafe { MAIN_HWND.0 });
     info!("b");
 
     Ok(())
