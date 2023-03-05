@@ -11,7 +11,6 @@ use eyre::WrapErr;
 use if_chain::if_chain;
 use lnk::ShellLink;
 use std::env;
-use std::ffi::c_void;
 use std::fs;
 use std::mem::transmute;
 use std::os::windows::prelude::AsRawHandle;
