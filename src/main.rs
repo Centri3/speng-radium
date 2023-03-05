@@ -3,46 +3,29 @@
 mod build;
 mod utils;
 
-use crate::utils::__set_execute_breakpoint;
-use crate::utils::__unset_execute_breakpoint;
 use crate::utils::logging;
 use crate::utils::logging::SetupFile;
 use eyre::eyre;
-use eyre::Context;
 use eyre::Result;
+use eyre::WrapErr;
 use if_chain::if_chain;
 use lnk::ShellLink;
 use std::env;
 use std::ffi::c_void;
 use std::fs;
-use std::fs::File;
-use std::io::Write;
 use std::mem::transmute;
+use std::os::windows::prelude::AsRawHandle;
+use std::os::windows::prelude::OwnedHandle;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use tracing::info;
-use tracing::trace;
 use tracing::trace_span;
-use tracing::warn;
 use tracing_appender::non_blocking::WorkerGuard;
 use windows::s;
 use windows::w;
-use windows::Win32::Foundation::CloseHandle;
-use windows::Win32::Foundation::DBG_CONTINUE;
-use windows::Win32::Foundation::DBG_EXCEPTION_NOT_HANDLED;
-use windows::Win32::Foundation::EXCEPTION_SINGLE_STEP;
-use windows::Win32::System::Diagnostics::Debug::ContinueDebugEvent;
-use windows::Win32::System::Diagnostics::Debug::DebugActiveProcessStop;
-use windows::Win32::System::Diagnostics::Debug::DebugSetProcessKillOnExit;
-use windows::Win32::System::Diagnostics::Debug::WaitForDebugEvent;
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
-use windows::Win32::System::Diagnostics::Debug::CREATE_PROCESS_DEBUG_EVENT;
-use windows::Win32::System::Diagnostics::Debug::CREATE_PROCESS_DEBUG_INFO;
-use windows::Win32::System::Diagnostics::Debug::DEBUG_EVENT;
-use windows::Win32::System::Diagnostics::Debug::DEBUG_EVENT_CODE;
-use windows::Win32::System::Diagnostics::Debug::EXCEPTION_DEBUG_EVENT;
-use windows::Win32::System::Diagnostics::Debug::LOAD_DLL_DEBUG_EVENT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::LibraryLoader::GetProcAddress;
 use windows::Win32::System::Memory::VirtualAllocEx;
@@ -50,17 +33,16 @@ use windows::Win32::System::Memory::MEM_COMMIT;
 use windows::Win32::System::Memory::MEM_RESERVE;
 use windows::Win32::System::Memory::PAGE_READWRITE;
 use windows::Win32::System::Threading::CreateRemoteThread;
-use windows::Win32::System::Threading::GetExitCodeProcess;
-use windows::Win32::System::Threading::GetProcessId;
-use windows::Win32::System::Threading::GetThreadId;
-use windows::Win32::System::Threading::SuspendThread;
-use windows::Win32::System::Threading::DEBUG_ONLY_THIS_PROCESS;
-use windows::Win32::System::Threading::DEBUG_PROCESS;
+use windows::Win32::System::Threading::CREATE_SUSPENDED;
 use windows::Win32::System::Threading::DETACHED_PROCESS;
+use windows::Win32::System::Threading::THREAD_CREATE_RUN_IMMEDIATELY;
+
+// Name of our DLL we inject into SE
+const DLL_NAME: &[u8] = b"libradium.dll";
 
 fn main() {
-    // We must do this to use Result everywhere. If main returns Result, color-eyre
-    // won't catch it
+    // We must do this to use Result everywhere. If main returns Result,
+    // color-eyre won't catch it
     let _guard = __start_modded_se().expect("Failed to start modded SE");
 }
 
@@ -74,105 +56,61 @@ fn __start_modded_se() -> Result<WorkerGuard> {
     // Create a span so we know what's from the loader
     let _span = trace_span!("loader").entered();
 
-    info!("Starting loader, this should not take long");
+    info!("Starting modded SE");
 
-    Command::new(&path)
-        .creation_flags(DEBUG_ONLY_THIS_PROCESS.0 | DEBUG_PROCESS.0 | DETACHED_PROCESS.0)
-        .env("_NO_DEBUG_HEAP", "1")
+    // Start SE in a suspended state, and get an OwnedHandle to it
+    let hprocess: OwnedHandle = Command::new(path)
+        .creation_flags(DETACHED_PROCESS.0 | CREATE_SUSPENDED.0)
         .spawn()
-        .wrap_err("Starting `SpaceEngine.exe` failed")?;
+        .wrap_err("Starting `SpaceEngine.exe` failed")?
+        .into();
 
-    // Generate steam_appid.txt
-    write!(File::create("steam_appid.txt")?, "314650")?;
+    // Use shadowing to cleanly convert our OwnedHandle to HANDLE
+    let hprocess = HANDLE(hprocess.as_raw_handle() as isize);
 
-    let mut cproc_event = DEBUG_EVENT::default();
-
-    // Wait for CREATE_PROCESS_DEBUG_EVENT, this is guaranteed to be the first event
-    // so we don't enter loop yet
-    unsafe { WaitForDebugEvent(&mut cproc_event, u32::MAX) };
-
-    if cproc_event.dwDebugEventCode != CREATE_PROCESS_DEBUG_EVENT {
-        return Err(eyre!("First event was not `CREATE_PROCESS_DEBUG_EVENT`"));
-    }
-
-    // SAFETY: The if statement above guarantees this is initialized
-    let cproc_info = unsafe { cproc_event.u.CreateProcessInfo };
-
-    cproc_info
-        .lpStartAddress
-        .ok_or_else(|| eyre!("SE does not have start address"))?;
-
-    // SAFETY: `GetProcessId` and `GetThreadId` should be safe. They don't take any
-    // raw pointers, and just return a u32.
     unsafe {
-        info!(
-            pid = ?GetProcessId(cproc_info.hProcess) as *const c_void,
-            tid = ?GetThreadId(cproc_info.hThread) as *const c_void,
-            base = ?cproc_info.lpBaseOfImage,
-            entry = ?cproc_info.lpStartAddress.unwrap() as usize as *const c_void,
-            "Got `CREATE_PROCESS_DEBUG_EVENT`, SE has been started",
+        let alloc = VirtualAllocEx(
+            hprocess,
+            None,
+            DLL_NAME.len(),
+            MEM_RESERVE | MEM_COMMIT,
+            PAGE_READWRITE,
         );
+
+        // SAFETY: This is safe, as if VirtualAllocEx fails, it'll return NULL, which
+        // will cause this to fail, but safely.
+        WriteProcessMemory(
+            hprocess,
+            alloc,
+            DLL_NAME.as_ptr().cast(),
+            DLL_NAME.len(),
+            None,
+        )
+        .unwrap();
+
+        CreateRemoteThread(
+            hprocess,
+            None,
+            0usize,
+            Some(
+                // SAFETY: LPTHREAD_START_ROUTINE and LoadLibraryA have similar signatures, so this
+                // is ok.
+                transmute(
+                    GetProcAddress(
+                        GetModuleHandleW(w!("kernel32.dll"))
+                            .wrap_err("Failed to get handle to `kernel32.dll`")?,
+                        s!("LoadLibraryA"),
+                    )
+                    .ok_or_else(|| eyre!("Failed to get address of `LoadLibraryA`"))?,
+                ),
+            ),
+            // Provide the name of our dll to LoadLibraryA
+            Some(alloc),
+            THREAD_CREATE_RUN_IMMEDIATELY.0,
+            None,
+        )
+        .expect("TODO:");
     }
-
-    // SAFETY: Safe if SE's being debugged, which it is.
-    unsafe {
-        __set_execute_breakpoint(
-            cproc_info.hThread,
-            cproc_info.lpStartAddress.unwrap() as usize as u64,
-        )?;
-    }
-
-    // SAFETY: This isn't an EXCEPTION_DEBUG_EVENT, so this is safe.
-    unsafe {
-        ContinueDebugEvent(
-            cproc_event.dwProcessId,
-            cproc_event.dwThreadId,
-            DBG_CONTINUE,
-        );
-    }
-
-    info!("Starting debugger loop");
-
-    // Now we enter debugger loop
-    loop {
-        unsafe {
-            let mut exit_code = 0u32;
-
-            // Ensure SE's still open
-            GetExitCodeProcess(cproc_info.hProcess, &mut exit_code);
-
-            if exit_code != 259u32 {
-                return Err(eyre!("SE has been closed"));
-            }
-        }
-
-        let mut dbg_event = DEBUG_EVENT::default();
-
-        // Close loader if it takes over a second to get an event
-        unsafe { WaitForDebugEvent(&mut dbg_event, 1000u32).expect("Timeout exceeded") };
-
-        // Print info of this event
-        __print_dbg_event(dbg_event)?;
-
-        unsafe {
-            match dbg_event.dwDebugEventCode {
-                EXCEPTION_DEBUG_EVENT => {
-                    if __handle_exception(dbg_event, cproc_info)? {
-                        break;
-                    }
-                }
-                CREATE_PROCESS_DEBUG_EVENT => _ = CloseHandle(dbg_event.u.CreateProcessInfo.hFile),
-                LOAD_DLL_DEBUG_EVENT => _ = CloseHandle(dbg_event.u.LoadDll.hFile),
-                _ => {}
-            }
-
-            // FIXME: This will incorrectly be called on an unhandled exception, though it
-            // doesn't cause any issues, as far as I know.
-            ContinueDebugEvent(dbg_event.dwProcessId, dbg_event.dwThreadId, DBG_CONTINUE);
-        }
-    }
-
-    info!("Debugger loop has been exited, loader's job is done");
 
     Ok(guard)
 }
@@ -221,119 +159,4 @@ fn __get_from_shortcut(lnk: &ShellLink) -> Result<PathBuf> {
 #[inline(always)]
 fn __get_from_cwd() -> Result<PathBuf> {
     Ok(env::current_dir()?.join("SpaceEngine.exe"))
-}
-
-#[inline(always)]
-fn __print_dbg_event(dbg_event: DEBUG_EVENT) -> Result<()> {
-    let u = dbg_event.u;
-
-    unsafe {
-        match dbg_event.dwDebugEventCode {
-            DEBUG_EVENT_CODE(1u32) => trace!(info = ?u.Exception, "Got `EXCEPTION_DEBUG_EVENT`"),
-            DEBUG_EVENT_CODE(2u32) => {
-                trace!(info = ?u.CreateThread, "Got `CREATE_THREAD_DEBUG_EVENT`");
-            }
-            DEBUG_EVENT_CODE(3u32) => {
-                trace!(info = ?u.CreateProcessInfo, "Got `CREATE_PROCESS_DEBUG_EVENT`");
-            }
-            DEBUG_EVENT_CODE(4u32) => trace!(info = ?u.ExitThread, "Got `EXIT_THREAD_DEBUG_EVENT`"),
-            DEBUG_EVENT_CODE(5u32) => {
-                trace!(info = ?u.ExitProcess, "Got `EXIT_PROCESS_DEBUG_EVENT`");
-            }
-            DEBUG_EVENT_CODE(6u32) => trace!(info = ?u.LoadDll, "Got `LOAD_DLL_DEBUG_EVENT`"),
-            DEBUG_EVENT_CODE(7u32) => trace!(info = ?u.UnloadDll, "Got `UNLOAD_DLL_DEBUG_EVENT`"),
-            DEBUG_EVENT_CODE(8u32) => {
-                trace!(info = ?u.DebugString, "Got `OUTPUT_DEBUG_STRING_EVENT`");
-            }
-            DEBUG_EVENT_CODE(9u32) => trace!(info = ?u.RipInfo, "Got `RIP_EVENT`"),
-            _ => return Err(eyre!("Invalid event code")),
-        };
-    }
-
-    Ok(())
-}
-
-fn __handle_exception(
-    dbg_event: DEBUG_EVENT, cproc_info: CREATE_PROCESS_DEBUG_INFO,
-) -> Result<bool> {
-    // SAFETY: This is guaranteed to be initialized, since this is only called when
-    // an EXCEPTION_DEBUG_EVENT is encountered
-    let info = unsafe { dbg_event.u.Exception.ExceptionRecord };
-
-    if info.ExceptionAddress != cproc_info.lpStartAddress.unwrap() as *mut c_void
-        || info.ExceptionCode != EXCEPTION_SINGLE_STEP
-    {
-        warn!("Unexpected exception! Marking as unhandled");
-
-        // If this isn't our breakpoint, don't handle exception
-        unsafe {
-            ContinueDebugEvent(
-                dbg_event.dwProcessId,
-                dbg_event.dwThreadId,
-                DBG_EXCEPTION_NOT_HANDLED,
-            );
-        }
-
-        // Early return so we don't improperly mark an unhandled exception as handled
-        return Ok(false);
-    }
-
-    trace!("Our breakpoint has been hit");
-
-    unsafe {
-        // Suspend main thread. This will be resumed by the dll later
-        SuspendThread(cproc_info.hThread);
-
-        let dll = b"libradium.dll";
-
-        // SAFETY: Checking if this is NULL guarantees this is safe, as the memory will
-        // always be allocated
-        let alloc = VirtualAllocEx(
-            cproc_info.hProcess,
-            None,
-            dll.len(),
-            MEM_RESERVE | MEM_COMMIT,
-            PAGE_READWRITE,
-        );
-
-        if alloc.is_null() {
-            return Err(eyre!("Failed to allocate memory for `libradium.dll`"));
-        }
-
-        // SAFETY: We just allocated this memory, so this is fine
-        WriteProcessMemory(
-            cproc_info.hProcess,
-            alloc,
-            dll.as_ptr().cast(),
-            dll.len(),
-            None,
-        );
-
-        // SAFETY: VERY UNSAFE BECAUSE OF TRANSMUTE. This will call LoadLibraryA.
-        CreateRemoteThread(
-            cproc_info.hProcess,
-            None,
-            0usize,
-            Some(transmute(
-                GetProcAddress(GetModuleHandleW(w!("kernel32.dll"))?, s!("LoadLibraryA"))
-                    .ok_or_else(|| eyre!("Failed to get address of `LoadLibraryA`"))?,
-            )),
-            Some(alloc),
-            0u32,
-            None,
-        )?;
-
-        __unset_execute_breakpoint(cproc_info.hThread)?;
-    }
-
-    // SAFETY: Since this is our breakpoint, this is safe
-    unsafe { ContinueDebugEvent(dbg_event.dwProcessId, dbg_event.dwThreadId, DBG_CONTINUE) };
-
-    unsafe {
-        // Exit debugger
-        DebugSetProcessKillOnExit(false);
-        DebugActiveProcessStop(dbg_event.dwProcessId);
-    };
-
-    Ok(true)
 }

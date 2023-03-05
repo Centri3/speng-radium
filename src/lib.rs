@@ -93,6 +93,12 @@ fn __attach() -> Result<()> {
 
     info!("I have been loaded by SE");
 
+    let hthread_main = __get_main_thread()?;
+
+    unsafe { ResumeThread(hthread_main) };
+
+    return Ok(());
+
     let cwd = env::current_dir()?;
     let exe = env::current_exe()?;
 
@@ -159,7 +165,10 @@ fn __attach() -> Result<()> {
         );
 
         if !lpwindowname.is_null() && lpwindowname.to_string().unwrap() == "SpaceEngine" {
-            std::fs::File::create(format!("{}", hwnd.0)).unwrap();
+            Builder::new()
+                .name("dll-main".to_owned())
+                .spawn(attach)
+                .unwrap();
         }
 
         hwnd
