@@ -1,74 +1,34 @@
 mod build;
 mod utils;
+mod workshop;
 
 use crate::utils::logging;
 use crate::utils::logging::SetupFile;
-use detour::static_detour;
+use crate::workshop::WorkshopItem;
 use eyre::eyre;
 use eyre::Result;
-use gag::Redirect;
 use path_clean::PathClean;
-use std::arch::asm;
-use std::arch::global_asm;
+use tracing::debug;
+use std::collections::HashMap;
 use std::env;
-use std::ffi::c_void;
 use std::fs;
-use std::fs::DirEntry;
-use std::fs::File;
-use std::mem::size_of;
-use std::mem::transmute;
 use std::path::PathBuf;
 use std::thread::Builder;
-use steamworks::sys::SteamAPI_ISteamApps_GetCurrentBetaName;
-use steamworks::sys::SteamAPI_Init;
-use steamworks::sys::SteamAPI_RestartAppIfNecessary;
-use steamworks::sys::SteamAPI_Shutdown;
-use steamworks::sys::SteamAPI_SteamApps_v008;
-use steamworks::sys::SteamAPI_SteamUGC_v016;
+use steamworks_sys::ISteamUGC;
+use steamworks_sys::SteamAPI_ISteamUGC_GetItemInstallInfo;
+use steamworks_sys::SteamAPI_ISteamUGC_GetNumSubscribedItems;
+use steamworks_sys::SteamAPI_ISteamUGC_GetSubscribedItems;
+use steamworks_sys::SteamAPI_Init;
+use steamworks_sys::SteamAPI_RestartAppIfNecessary;
+use steamworks_sys::SteamAPI_SteamUGC_v016;
 use tracing::info;
 use tracing::trace_span;
-use tracing::warn;
-use windows::core::InParam;
-use windows::core::PCWSTR;
-use windows::s;
-use windows::w;
-use windows::Win32::Foundation::CloseHandle;
-use windows::Win32::Foundation::GetLastError;
-use windows::Win32::Foundation::HANDLE;
+use tracing_appender::non_blocking::WorkerGuard;
 use windows::Win32::Foundation::HINSTANCE;
-use windows::Win32::Foundation::HWND;
-use windows::Win32::System::Console::AllocConsole;
-use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
-use windows::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot;
-use windows::Win32::System::Diagnostics::ToolHelp::Thread32Next;
-use windows::Win32::System::Diagnostics::ToolHelp::TH32CS_SNAPTHREAD;
-use windows::Win32::System::Diagnostics::ToolHelp::THREADENTRY32;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::LibraryLoader::GetProcAddress;
-use windows::Win32::System::Memory::VirtualFree;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
-use windows::Win32::System::Threading::GetCurrentProcess;
-use windows::Win32::System::Threading::GetCurrentProcessId;
-use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::Threading::OpenThread;
 use windows::Win32::System::Threading::ResumeThread;
-use windows::Win32::System::Threading::THREAD_ALL_ACCESS;
 use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
-use windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW;
-use windows::Win32::UI::WindowsAndMessaging::MessageBoxW;
-use windows::Win32::UI::WindowsAndMessaging::HMENU;
-use windows::Win32::UI::WindowsAndMessaging::MB_ICONWARNING;
-use windows::Win32::UI::WindowsAndMessaging::MB_OKCANCEL;
-use windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE;
-use windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE;
-use windows_sys::Win32::UI::WindowsAndMessaging::CreateWindowExW;
-
-static_detour! {
-    static CreateWindowExWHook: unsafe extern "system" fn(WINDOW_EX_STYLE, PCWSTR, PCWSTR, WINDOW_STYLE, i32, i32, i32, i32, HWND, HMENU, HINSTANCE, *const c_void) -> HWND;
-}
-
-#[rustfmt::skip]
-type FnCreateWindowExW = unsafe extern "system" fn(WINDOW_EX_STYLE, PCWSTR, PCWSTR, WINDOW_STYLE, i32, i32, i32, i32, HWND, HMENU, HINSTANCE, *const c_void) -> HWND;
 
 #[no_mangle]
 unsafe extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: usize) -> bool {
@@ -82,22 +42,51 @@ unsafe extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: usize) -> bool {
     true
 }
 
-// TODO: If this panics or otherwise crashes, it sometimes won't finish logging.
-// This makes debugging a pain...
+// FIXME: If this segfaults, it won't finish printing to log. This makes
+// debugging a pain... Sadly, I don't think this can be fixed.
 fn attach() {
-    // Setup logging and retain the log file, panicking if it fails
-    let _guard = logging::setup(&SetupFile::Retain);
-
     // We must do this to use Result everywhere. If main returns Result, color-eyre
     // won't catch it
-    __attach().unwrap();
+    let _guard = __attach().unwrap();
 }
 
-fn __attach() -> Result<()> {
+fn __attach() -> Result<WorkerGuard> {
+    // Setup logging and retain the log file, panicking if it fails
+    let guard = logging::setup(&SetupFile::Retain);
     // Create a span so we know what's from here
     let _span = trace_span!("libradium").entered();
 
     info!("I have been loaded by SE");
+
+    unsafe {
+        SteamAPI_RestartAppIfNecessary(314650u32);
+        SteamAPI_Init();
+    }
+
+    info!("Initialized Steam API");
+
+    let ugc = unsafe { SteamAPI_SteamUGC_v016() };
+    let mut items = __get_workshop_items(ugc)?;
+    let addons = __get_workshop_items_addons()?;
+
+    info!("Found subscribed workshop items");
+
+    for (_, item) in items.iter() {
+        debug!(item.id, ?item.path)
+    }
+
+    // Remove disabled addons
+    for addon in addons.iter() {
+        if !addon.enabled.unwrap() && items.get(&addon.id).is_some() {
+            items.remove(&addon.id).unwrap();
+        }
+    }
+
+    info!("Disabled items based on `addons.cfg`");
+
+    for (_, item) in items.iter() {
+        debug!(item.id, ?item.path)
+    }
 
     // Resume the main thread of SE
     unsafe {
@@ -114,5 +103,99 @@ fn __attach() -> Result<()> {
     // Clean up
     fs::remove_file("mainthread")?;
 
-    Ok(())
+    Ok(guard)
+}
+
+#[inline(always)]
+fn __get_workshop_items(ugc: *mut ISteamUGC) -> Result<HashMap<u64, WorkshopItem>> {
+    let num_of_items = unsafe { SteamAPI_ISteamUGC_GetNumSubscribedItems(ugc) };
+    let mut item_ids = vec![0u64; num_of_items as usize];
+
+    // This will get the id of every item the user's subscribed to
+    unsafe { SteamAPI_ISteamUGC_GetSubscribedItems(ugc, item_ids.as_mut_ptr(), num_of_items) };
+
+    let mut items = HashMap::with_capacity(num_of_items as usize);
+
+    for item_id in item_ids {
+        let mut path = [0u8; 1024usize];
+
+        unsafe {
+            SteamAPI_ISteamUGC_GetItemInstallInfo(
+                ugc,
+                item_id,
+                &mut 0u64,
+                path.as_mut_ptr().cast(),
+                path.len() as u32,
+                &mut 0u32,
+            );
+        }
+
+        assert!(items
+            .insert(
+                item_id,
+                WorkshopItem {
+                    path: PathBuf::from(String::from_utf8(path.to_vec())?.replace('\0', "")),
+                    id: item_id,
+                    enabled: None,
+                },
+            )
+            .is_none());
+    }
+
+    Ok(items)
+}
+
+// TODO: This is both disgusting and will fail if either Id or Enabled are
+// within Path. FIX LATER.
+#[inline(always)]
+fn __get_workshop_items_addons() -> Result<Vec<WorkshopItem>> {
+    let addons = fs::read_to_string(env::current_dir()?.join("../config/addons.cfg").clean())?;
+    let mut items = vec![];
+
+    for (path_indice, _) in addons.match_indices("Path") {
+        let id_indice = path_indice
+            + addons[path_indice..]
+                .find("Id")
+                .ok_or_else(|| eyre!("Missing `Id` field on addon"))?;
+
+        let enabled_indice = id_indice
+            + addons[id_indice..]
+                .find("Enabled")
+                .ok_or_else(|| eyre!("Missing `Enabled` field on addon"))?;
+
+        let path_start = path_indice
+            + addons[path_indice..]
+                .find('"')
+                .ok_or_else(|| eyre!("Unexpectedly got `None`"))?;
+
+        let path = addons[path_start..]
+            .split_once('\n')
+            .ok_or_else(|| eyre!("Unexpectedly got `None`"))?
+            .0
+            .replace('"', "");
+
+        let id = addons[id_indice..]
+            .split_whitespace()
+            .nth(1usize)
+            .ok_or_else(|| eyre!("Unexpectedly got `None`"))?
+            .parse::<u64>()?;
+
+        let enabled = match addons[enabled_indice..]
+            .split_whitespace()
+            .nth(1usize)
+            .ok_or_else(|| eyre!("Unexpectedly got `None`"))?
+        {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(eyre!("Field `Enabled` was not bool")),
+        }?;
+
+        items.push(WorkshopItem {
+            path: PathBuf::from(path),
+            id,
+            enabled: Some(enabled),
+        })
+    }
+
+    Ok(items)
 }

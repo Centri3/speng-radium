@@ -45,6 +45,10 @@ use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
 
 // Name of our DLL we inject into SE
 const DLL_NAME: &[u8] = b"libradium.dll";
+// Our bundled steam_api64.dll. steamworks-sys doesn't like the version SE uses
+const DLL_STEAM_API64: &[u8] = include_bytes!("../assets/steam_api64.dll");
+// This will force SE to not relaunch itself through Steam
+const DLL_STEAM_APPID: &[u8] = include_bytes!("../assets/steam_appid.txt");
 
 fn main() {
     // We must do this to use Result everywhere. If main returns Result,
@@ -64,6 +68,9 @@ fn __start_modded_se() -> Result<WorkerGuard> {
 
     info!("Starting modded SE");
 
+    File::create("steam_api64.dll")?.write_all(DLL_STEAM_API64)?;
+    File::create("steam_appid.txt")?.write_all(DLL_STEAM_APPID)?;
+
     // Start SE in a suspended state...
     let child = Command::new(path)
         .creation_flags(CREATE_SUSPENDED.0)
@@ -79,7 +86,7 @@ fn __start_modded_se() -> Result<WorkerGuard> {
 
     debug!(tid = format_args!("{main_tid:x}"), "Found main thread of SE");
 
-    // FIXME: This is never freed. Does it matter? Nah.
+    // FIXME: This is never freed. Does it matter? Meh.
     let alloc = unsafe {
         VirtualAllocEx(hprocess, None, DLL_NAME.len(), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)
     };
