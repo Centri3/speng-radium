@@ -1,18 +1,29 @@
 mod build;
+mod patch;
 mod utils;
 mod workshop;
 
+use crate::patch::run_patches;
+use crate::patch::FnReplace;
+use crate::patch::Patches;
 use crate::utils::logging;
 use crate::utils::logging::SetupFile;
 use crate::workshop::WorkshopItem;
+use detour::RawDetour;
 use eyre::eyre;
 use eyre::Result;
 use path_clean::PathClean;
-use tracing::debug;
+use std::arch::asm;
+use std::arch::global_asm;
 use std::collections::HashMap;
 use std::env;
+use std::ffi::c_void;
 use std::fs;
+use std::mem::size_of;
+use std::mem::transmute;
+use std::mem::ManuallyDrop;
 use std::path::PathBuf;
+use std::ptr::null_mut;
 use std::thread::Builder;
 use steamworks_sys::ISteamUGC;
 use steamworks_sys::SteamAPI_ISteamUGC_GetItemInstallInfo;
@@ -20,15 +31,22 @@ use steamworks_sys::SteamAPI_ISteamUGC_GetNumSubscribedItems;
 use steamworks_sys::SteamAPI_ISteamUGC_GetSubscribedItems;
 use steamworks_sys::SteamAPI_Init;
 use steamworks_sys::SteamAPI_RestartAppIfNecessary;
+use steamworks_sys::SteamAPI_Shutdown;
 use steamworks_sys::SteamAPI_SteamUGC_v016;
+use tracing::debug;
 use tracing::info;
 use tracing::trace_span;
 use tracing_appender::non_blocking::WorkerGuard;
 use windows::Win32::Foundation::HINSTANCE;
+use windows::Win32::System::ProcessStatus::K32EnumProcessModules;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
+use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::System::Threading::OpenThread;
 use windows::Win32::System::Threading::ResumeThread;
 use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
+
+static mut BASE_ADDRESS: usize = 0usize;
+static mut TEST: usize = 0usize;
 
 #[no_mangle]
 unsafe extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: usize) -> bool {
@@ -88,6 +106,49 @@ fn __attach() -> Result<WorkerGuard> {
         debug!(item.id, ?item.path)
     }
 
+    let mut modules = [HINSTANCE(0isize); 1024usize];
+    unsafe {
+        K32EnumProcessModules(
+            GetCurrentProcess(),
+            modules.as_mut_ptr().cast(),
+            size_of::<[HINSTANCE; 1024usize]>() as u32,
+            &mut 0u32,
+        )
+    };
+
+    unsafe { BASE_ADDRESS = modules[0usize].0 as usize };
+
+    fn __run_patches() {
+        let patches: Patches = unsafe {
+            (
+                vec![],
+                None,
+                vec![],
+                Some(Box::new(transmute::<_, fn()>(TEST))),
+                None,
+                vec![],
+                None,
+            )
+        };
+
+        run_patches(patches);
+    }
+
+    let hook = unsafe {
+        let hook = ManuallyDrop::new(RawDetour::new(
+            (BASE_ADDRESS + 0x3eaf10) as *const (),
+            __run_patches as *const (),
+        )?);
+
+        TEST = hook.trampoline() as *const _ as usize;
+
+        hook
+    };
+
+    unsafe { hook.enable()? };
+
+    unsafe { SteamAPI_Shutdown() };
+
     // Resume the main thread of SE
     unsafe {
         assert_ne!(
@@ -102,6 +163,8 @@ fn __attach() -> Result<WorkerGuard> {
 
     // Clean up
     fs::remove_file("mainthread")?;
+
+    std::thread::sleep(std::time::Duration::from_secs(10000));
 
     Ok(guard)
 }
