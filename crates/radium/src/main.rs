@@ -46,9 +46,9 @@ use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
 // Name of our DLL we inject into SE
 const DLL_NAME: &[u8] = b"libradium.dll";
 // Our bundled steam_api64.dll. steamworks-sys doesn't like the version SE uses
-const DLL_STEAM_API64: &[u8] = include_bytes!("../assets/steam_api64.dll");
+const DLL_STEAM_API64: &[u8] = include_bytes!("../../../assets/steam_api64.dll");
 // This will force SE to not relaunch itself through Steam
-const DLL_STEAM_APPID: &[u8] = include_bytes!("../assets/steam_appid.txt");
+const DLL_STEAM_APPID: &[u8] = include_bytes!("../../../assets/steam_appid.txt");
 
 fn main() {
     // We must do this to use Result everywhere. If main returns Result,

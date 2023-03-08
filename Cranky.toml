@@ -1,7 +1,0 @@
-# See: <https://github.com/ericseppanen/cargo-cranky>
-
-warn = [
-    # These should only be enabled temporarily to see what could be improved
-    # "clippy::pedantic",
-    # "clippy::nursery",
-]
