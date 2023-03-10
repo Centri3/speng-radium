@@ -1,3 +1,6 @@
+[registries.crates-io]
+protocol = "sparse"
+
 [target.'cfg(all())']
 rustflags = [
     # BEGIN - Embark standard lints v6 for Rust 1.55+

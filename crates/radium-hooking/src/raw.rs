@@ -37,7 +37,8 @@ pub(crate) fn raw_hooks() -> &'static Mutex<HashSet<usize>> {
 
 #[derive(Debug)]
 pub struct RawHook<T = ()> {
-    new: *const T,
+    target: *const T,
+    detour: *const T,
     trampoline: *const T,
 }
 
