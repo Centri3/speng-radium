@@ -6,6 +6,7 @@ use iced_x86::DecoderOptions;
 use iced_x86::Instruction;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
+use region::alloc;
 use region::page;
 use region::Protection;
 use region::Region;
@@ -57,7 +58,7 @@ impl<T> RawHook<T> {
         __query_range_checked(target, Self::INSTRUCTION_MAX_SIZE)?;
 
         // SAFETY: Because we guaranteed no pages are unmapped above, this is safe. At
-        // least, for constructing a RawHook... Enabling one is a whole other story.
+        // least, for constructing a RawHook... enabling one is a whole other story.
         unsafe { Self::new_unchecked(target.cast(), detour.cast()) }
     }
 
@@ -65,6 +66,8 @@ impl<T> RawHook<T> {
     pub unsafe fn new_unchecked(target: *const T, detour: *const T) -> Result<Self, RawHookError> {
         trace!("Constructing new `RawHook`");
 
+        // SAFETY: This will be set back to its original protection when dropped, and
+        // since we assume all threads are suspended when hooking, this is fine.
         let _guard = unsafe {
             region::protect_with_handle(
                 target,
@@ -73,35 +76,46 @@ impl<T> RawHook<T> {
             )?
         };
 
-        // Create an x86_64 decoder. This will allow us to add a jmp or call easily
-        let decoder = unsafe {
-            Decoder::with_ip(
-                Self::INSTRUCTION_BITNESS,
-                slice::from_raw_parts(target.cast(), Self::INSTRUCTION_MAX_SIZE),
-                target as u64,
-                DecoderOptions::NO_INVALID_CHECK,
-            )
-        };
+        // SAFETY: THIS IS NOT SAFE. The caller must uphold that this is mapped. See
+        // new, which does this for you.
+        let bytes = unsafe { slice::from_raw_parts(target.cast(), Self::INSTRUCTION_MAX_SIZE) };
 
-        let instrs = decoder.into_iter().collect::<Vec<Instruction>>();
-        let num = instrs
+        // Create an x86_64 decoder. This will allow us to initialize our hook
+        let decoder = Decoder::with_ip(
+            Self::INSTRUCTION_BITNESS,
+            bytes,
+            target as u64,
+            DecoderOptions::NO_INVALID_CHECK,
+        );
+
+        // This will get number of bytes we should replace
+        let num = decoder
+            .into_iter()
+            .collect::<Vec<Instruction>>()
             .iter()
             .filter_map(|i| {
-                if i.ip() >= target as u64 + 0x5u64 {
-                    None
-                } else {
-                    Some(i.len())
+                trace!(ip = i.ip(), len = i.len(), %i, "Found instruction");
+
+                match i.ip() <= target as u64 + 0x5u64 {
+                    true => Some(i.len()),
+                    false => None,
                 }
             })
             .sum::<usize>();
 
-        for i in instrs {
-            println!("IP: {:X} INSTRUCTION: {i}, LEN: {}", i.ip(), i.len());
-        }
+        trace!(num, nops = num - 5usize, "Got number of bytes to replace");
 
-        println!("{num}");
+        // Construct a trampoline function with enough room for the original bytes and a
+        // jmp instruction.
+        let trampoline =
+            alloc(bytes[..num].len() + 5usize, Protection::READ_WRITE_EXECUTE)?.as_ptr::<T>();
 
-        todo!();
+        Ok(Self {
+            target,
+            detour,
+            trampoline,
+            prev_bytes: bytes[..num].to_vec(),
+        })
     }
 }
 
