@@ -11,6 +11,9 @@ use region::Protection;
 use region::Region;
 use std::slice;
 use thiserror::Error;
+use tracing::info;
+use tracing::instrument;
+use tracing::trace;
 
 #[derive(Debug, Error)]
 pub enum RawHookError {
@@ -39,62 +42,64 @@ pub struct RawHook<T> {
     target: *const T,
     detour: *const T,
     trampoline: *const T,
+    prev_bytes: Vec<u8>,
 }
 
 impl<T> RawHook<T> {
-    pub fn new(target: *const T, detour: *const T) -> Result<Self, RawHookError> {
-        /// We only need to replace at most 16-bytes, as that's the largest
-        /// instruction possible in the `x86_64` architecture.
-        const INSTRUCTION_MAX_SIZE: usize = 0x10usize;
+    /// The bitness of our instructions. For SE, this is always 64.
+    const INSTRUCTION_BITNESS: u32 = 64u32;
+    /// We only need to replace at most 16-bytes, as that's the largest
+    /// instruction possible in the `x86_64` architecture.
+    const INSTRUCTION_MAX_SIZE: usize = 0x10usize;
 
+    pub fn new(target: *const T, detour: *const T) -> Result<Self, RawHookError> {
         // Verify all pages are mapped, this is what makes new safe.
-        __query_range_checked(target, INSTRUCTION_MAX_SIZE)?;
+        __query_range_checked(target, Self::INSTRUCTION_MAX_SIZE)?;
 
         // SAFETY: Because we guaranteed no pages are unmapped above, this is safe. At
         // least, for constructing a RawHook... Enabling one is a whole other story.
         unsafe { Self::new_unchecked(target.cast(), detour.cast()) }
     }
 
+    #[instrument]
     pub unsafe fn new_unchecked(target: *const T, detour: *const T) -> Result<Self, RawHookError> {
-        /// The bitness of our instructions. For SE, this is always 64.
-        const INSTRUCTION_BITNESS: u32 = 64u32;
-        /// We only need to replace at most 16-bytes, as that's the largest
-        /// instruction possible in the `x86_64` architecture.
-        const INSTRUCTION_MAX_SIZE: usize = 0x10usize;
+        trace!("Constructing new `RawHook`");
 
-        let _handle = unsafe {
+        let _guard = unsafe {
             region::protect_with_handle(
                 target,
-                INSTRUCTION_MAX_SIZE,
+                Self::INSTRUCTION_MAX_SIZE,
                 Protection::READ_WRITE_EXECUTE,
             )?
         };
 
-        let mut decoder = unsafe {
+        // Create an x86_64 decoder. This will allow us to add a jmp or call easily
+        let decoder = unsafe {
             Decoder::with_ip(
-                INSTRUCTION_BITNESS,
-                slice::from_raw_parts(target.cast(), INSTRUCTION_MAX_SIZE),
+                Self::INSTRUCTION_BITNESS,
+                slice::from_raw_parts(target.cast(), Self::INSTRUCTION_MAX_SIZE),
                 target as u64,
                 DecoderOptions::NO_INVALID_CHECK,
             )
         };
 
-        let instrs = decoder.iter().collect::<Vec<Instruction>>();
-        let mut num_to_replace = 0usize;
+        let instrs = decoder.into_iter().collect::<Vec<Instruction>>();
+        let num = instrs
+            .iter()
+            .filter_map(|i| {
+                if i.ip() >= target as u64 + 0x5u64 {
+                    None
+                } else {
+                    Some(i.len())
+                }
+            })
+            .sum::<usize>();
 
-        for instr in instrs.iter() {
-            num_to_replace += instr.len();
-
-            if num_to_replace >= 5usize {
-                break;
-            }
+        for i in instrs {
+            println!("IP: {:X} INSTRUCTION: {i}, LEN: {}", i.ip(), i.len());
         }
 
-        for instr in instrs.iter() {
-            println!("INSTRUCTION: {instr}, SIZE: {}", instr.len());
-        }
-
-        println!("{}", num_to_replace);
+        println!("{num}");
 
         todo!();
     }
