@@ -1,3 +1,5 @@
+use crate::utils::__query_range_checked;
+use crate::utils::__round_to_page_boundaries;
 use hashbrown::HashSet;
 use iced_x86::Decoder;
 use iced_x86::DecoderOptions;
@@ -5,13 +7,10 @@ use iced_x86::Instruction;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use region::page;
-use region::protect_with_handle;
-use region::query;
 use region::Protection;
+use region::Region;
 use std::slice;
 use thiserror::Error;
-
-use crate::utils::__round_to_page_boundaries;
 
 #[derive(Debug, Error)]
 pub enum RawHookError {
@@ -36,43 +35,41 @@ pub(crate) fn raw_hooks() -> &'static Mutex<HashSet<usize>> {
 }
 
 #[derive(Debug)]
-pub struct RawHook<T = ()> {
+pub struct RawHook<T> {
     target: *const T,
     detour: *const T,
     trampoline: *const T,
 }
 
 impl<T> RawHook<T> {
-    pub unsafe fn new(target: *const T, detour: *const T) -> Result<Self, RawHookError> {
-        // The bitness of our instructions. For SE, this is always 64.
-        const INSTRUCTION_BITNESS: u32 = 64u32;
-        // We only need to replace at most 16-bytes, as that's the largest instruction
-        // possible in the x86_64 architecture.
+    pub fn new(target: *const T, detour: *const T) -> Result<Self, RawHookError> {
+        /// We only need to replace at most 16-bytes, as that's the largest
+        /// instruction possible in the `x86_64` architecture.
         const INSTRUCTION_MAX_SIZE: usize = 0x10usize;
 
-        // This will return Err if any pages are unmapped
-        // TODO(Centri3): Test this
-        {
-            let (address, size) = __round_to_page_boundaries(target, INSTRUCTION_MAX_SIZE)?;
+        // Verify all pages are mapped, this is what makes new safe.
+        __query_range_checked(target, INSTRUCTION_MAX_SIZE)?;
 
-            for i in 0usize..size / page::size() {
-                query((address as usize + i * page::size()) as *const T)?;
-            }
-        }
+        // SAFETY: Because we guaranteed no pages are unmapped above, this is safe. At
+        // least, for constructing a RawHook... Enabling one is a whole other story.
+        unsafe { Self::new_unchecked(target.cast(), detour.cast()) }
+    }
 
-        // SAFETY: We guarantee every page accessed is mapped, so this is ok. Also,
-        // since we assume that all threads are suspended, this is fine, as we
-        // will restore the original protection before they're resumed.
-        #[rustfmt::skip]
+    pub unsafe fn new_unchecked(target: *const T, detour: *const T) -> Result<Self, RawHookError> {
+        /// The bitness of our instructions. For SE, this is always 64.
+        const INSTRUCTION_BITNESS: u32 = 64u32;
+        /// We only need to replace at most 16-bytes, as that's the largest
+        /// instruction possible in the `x86_64` architecture.
+        const INSTRUCTION_MAX_SIZE: usize = 0x10usize;
+
         let _handle = unsafe {
-            protect_with_handle(
+            region::protect_with_handle(
                 target,
                 INSTRUCTION_MAX_SIZE,
-                Protection::READ_WRITE_EXECUTE
+                Protection::READ_WRITE_EXECUTE,
             )?
         };
 
-        // SAFETY: Since target is mapped memory (guaranteed above), this is ok.
         let mut decoder = unsafe {
             Decoder::with_ip(
                 INSTRUCTION_BITNESS,
