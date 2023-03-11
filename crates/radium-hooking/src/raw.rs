@@ -1,8 +1,9 @@
 use crate::utils::__query_range_checked;
 use crate::utils::__round_to_page_boundaries;
-use derivative::Derivative;
 use hashbrown::HashSet;
+use iced_x86::code_asm::rsp;
 use iced_x86::code_asm::CodeAssembler;
+use iced_x86::code_asm::*;
 use iced_x86::Decoder;
 use iced_x86::DecoderOptions;
 use iced_x86::IcedError;
@@ -40,17 +41,14 @@ pub(crate) fn raw_hooks() -> &'static Mutex<HashSet<usize>> {
     RAW_HOOKS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-#[derive(Derivative)]
-#[derivative(Debug)]
-pub struct RawHook<T: Debug> {
+pub struct RawHook<T> {
     target: *const T,
     detour: *const T,
-    #[derivative(Debug = "ignore")]
     trampoline: Allocation,
     prev_instr: Vec<Instruction>,
 }
 
-impl<T: Debug> RawHook<T> {
+impl<T> RawHook<T> {
     /// The bitness of our instructions. For SE, this is always 64.
     const INSTRUCTION_BITNESS: u32 = 64u32;
     /// We only need to replace at most 16-bytes, as that's the largest
@@ -123,19 +121,31 @@ impl<T: Debug> RawHook<T> {
         })
     }
 
-    #[instrument]
+    #[instrument(skip(self), fields(target = ?self.target, detour = ?self.detour))]
     pub unsafe fn enable(&mut self) -> Result<(), RawHookError> {
         let mut ca = CodeAssembler::new(Self::INSTRUCTION_BITNESS)?;
 
-        ca.jmp(0u64)?;
+        ca.add(rsp, 0x08)?;
+        // FIXME: This may get truncated!!! Also ensure adding 8 then subtracting 8 is
+        // the right way of doing this (I don't think it is lol!)
+        ca.mov(byte_ptr(rsp) - 0x08usize, self.detour as i32)?;
+        ca.ret()?;
 
         // Add our trampoline function
+        // FIXME: The bytes written here (at least for any referencing memory) are
+        // always wrong
         for instr in &mut self.prev_instr.clone() {
             if !instr.is_invalid() {
                 ca.add_instruction(*instr)?;
             }
         }
 
+        ca.push(rax)?;
+        // FIXME: This may get truncated!!! Also ensure pushing then subtracting 8 is
+        // the right way of doing this (I don't think it is lol!)
+        ca.mov(rax, i64::MAX)?;
+        ca.mov(qword_ptr(rsp) - 0x08usize, rax)?;
+        ca.pop(rax)?;
         ca.ret()?;
 
         let bytes = ca.assemble(self.trampoline.as_ptr::<()>() as u64)?;
@@ -152,7 +162,7 @@ impl<T: Debug> RawHook<T> {
             );
 
             for i in dec {
-                println!("{:x} INSTRUCTION: {i} LEN: {}", i.ip(), i.len());
+                println!("{:x} LEN: {:x} INSTRUCTION: {i}", i.ip(), i.len());
             }
         };
 
@@ -172,6 +182,8 @@ mod tests {
     #[test]
     fn a() {
         unsafe {
+            println!("{:?}", BYTES as *const _);
+
             panic!(
                 "{}",
                 RawHook::new(BYTES.as_ptr().cast::<()>(), ptr::null())
