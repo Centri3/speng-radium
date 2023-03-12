@@ -1,0 +1,3 @@
+[toolchain]
+# TODO: Use a specific version in the future
+channel = "nightly"

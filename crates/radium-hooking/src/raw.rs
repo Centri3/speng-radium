@@ -1,25 +1,23 @@
+use crate::utils::__alloc_at_2gb;
 use crate::utils::__query_range_checked;
-use crate::utils::__round_to_page_boundaries;
 use hashbrown::HashSet;
 use iced_x86::code_asm::rsp;
 use iced_x86::code_asm::CodeAssembler;
 use iced_x86::code_asm::*;
+use iced_x86::BlockEncoder;
+use iced_x86::BlockEncoderOptions;
 use iced_x86::Decoder;
 use iced_x86::DecoderOptions;
 use iced_x86::IcedError;
 use iced_x86::Instruction;
+use iced_x86::InstructionBlock;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
-use region::alloc;
-use region::page;
 use region::Allocation;
 use region::Protection;
-use region::Region;
 use std::fmt::Debug;
-use std::mem::forget;
 use std::slice;
 use thiserror::Error;
-use tracing::info;
 use tracing::instrument;
 use tracing::trace;
 
@@ -29,8 +27,6 @@ pub enum RawHookError {
     RegionError(#[from] region::Error),
     #[error("Encountered `IcedError`: {0}")]
     IcedError(#[from] IcedError),
-    #[error("`RawHook` at `{0:x?}` was already present")]
-    AlreadyPresent(*const ()),
 }
 
 #[inline]
@@ -58,6 +54,8 @@ impl<T> RawHook<T> {
     pub fn new(target: *const T, detour: *const T) -> Result<Self, RawHookError> {
         // Verify all pages are mapped, this is what makes new safe.
         __query_range_checked(target, Self::INSTRUCTION_MAX_SIZE)?;
+
+        // TODO: Check here that both target and detour are executable
 
         // SAFETY: Because we guaranteed no pages are unmapped above, this is safe. At
         // least, for constructing a RawHook... enabling one is a whole other story.
@@ -108,10 +106,7 @@ impl<T> RawHook<T> {
 
         // Allocate a trampoline function with enough room for the original bytes and a
         // jmp instruction. This will be constructed later, when enabled.
-        let trampoline = alloc(
-            instrs[..num].iter().map(|i| i.len()).sum::<usize>() + 5usize,
-            Protection::READ_WRITE_EXECUTE,
-        )?;
+        let trampoline = __alloc_at_2gb(target, num + 1000, Protection::READ_WRITE_EXECUTE)?;
 
         Ok(Self {
             target,
@@ -123,48 +118,40 @@ impl<T> RawHook<T> {
 
     #[instrument(skip(self), fields(target = ?self.target, detour = ?self.detour))]
     pub unsafe fn enable(&mut self) -> Result<(), RawHookError> {
-        let mut ca = CodeAssembler::new(Self::INSTRUCTION_BITNESS)?;
+        let mut asm = CodeAssembler::new(Self::INSTRUCTION_BITNESS)?;
 
-        ca.add(rsp, 0x08)?;
-        // FIXME: This may get truncated!!! Also ensure adding 8 then subtracting 8 is
-        // the right way of doing this (I don't think it is lol!)
-        ca.mov(byte_ptr(rsp) - 0x08usize, self.detour as i32)?;
-        ca.ret()?;
+        asm.push(rax)?;
+        asm.mov(rax, self.detour as u64)?;
+        asm.mov(byte_ptr(rsp) - 8u64, rax)?;
+        asm.pop(rax)?;
+        asm.ret()?;
 
-        // Add our trampoline function
-        // FIXME: The bytes written here (at least for any referencing memory) are
-        // always wrong
-        for instr in &mut self.prev_instr.clone() {
-            if !instr.is_invalid() {
-                ca.add_instruction(*instr)?;
-            }
+        let trampoline = asm.assemble(self.trampoline.as_ptr::<()>() as u64)?;
+
+        // Relocate to our trampoline function
+        let original = BlockEncoder::encode(
+            Self::INSTRUCTION_BITNESS,
+            InstructionBlock::new(
+                &self.prev_instr,
+                self.trampoline.as_ptr::<()>() as u64 + trampoline.len() as u64,
+            ),
+            BlockEncoderOptions::NONE,
+        )?
+        .code_buffer;
+
+        let bytes = [trampoline, original].concat();
+
+        // TODO: safety docs
+        unsafe { self.trampoline.as_mut_ptr::<Vec<u8>>().write(bytes.clone()) };
+
+        for instr in Decoder::with_ip(
+            Self::INSTRUCTION_BITNESS,
+            &bytes,
+            self.trampoline.as_ptr::<()>() as u64,
+            DecoderOptions::NONE,
+        ) {
+            println!("{}", instr);
         }
-
-        ca.push(rax)?;
-        // FIXME: This may get truncated!!! Also ensure pushing then subtracting 8 is
-        // the right way of doing this (I don't think it is lol!)
-        ca.mov(rax, i64::MAX)?;
-        ca.mov(qword_ptr(rsp) - 0x08usize, rax)?;
-        ca.pop(rax)?;
-        ca.ret()?;
-
-        let bytes = ca.assemble(self.trampoline.as_ptr::<()>() as u64)?;
-        unsafe { self.trampoline.as_mut_ptr::<Vec<u8>>().write(bytes) };
-
-        unsafe {
-            let bytes = &self.trampoline.as_ptr::<Vec<u8>>().read();
-
-            let dec = Decoder::with_ip(
-                64,
-                bytes,
-                self.trampoline.as_ptr::<()>() as u64,
-                DecoderOptions::NONE,
-            );
-
-            for i in dec {
-                println!("{:x} LEN: {:x} INSTRUCTION: {i}", i.ip(), i.len());
-            }
-        };
 
         todo!();
     }
@@ -182,8 +169,6 @@ mod tests {
     #[test]
     fn a() {
         unsafe {
-            println!("{:?}", BYTES as *const _);
-
             panic!(
                 "{}",
                 RawHook::new(BYTES.as_ptr().cast::<()>(), ptr::null())
