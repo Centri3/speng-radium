@@ -47,9 +47,12 @@ pub struct RawHook<T> {
 impl<T> RawHook<T> {
     /// The bitness of our instructions. For SE, this is always 64.
     const INSTRUCTION_BITNESS: u32 = 64u32;
-    /// We only need to replace at most 16-bytes, as that's the largest
+    /// We only need to replace at most 32-bytes, as that's twice the largest
     /// instruction possible in the `x86_64` architecture.
-    const INSTRUCTION_MAX_SIZE: usize = 0x10usize;
+    ///
+    /// TODO: I don't think this is right (I think we only need 16-bytes) but I
+    /// don't care and maybe it'll prevent a bug in the future.
+    const INSTRUCTION_MAX_SIZE: usize = 0x20usize;
 
     pub fn new(target: *const T, detour: *const T) -> Result<Self, RawHookError> {
         // Verify all pages are mapped, this is what makes new safe.
@@ -89,7 +92,7 @@ impl<T> RawHook<T> {
 
         let instrs = dec.into_iter().collect::<Vec<Instruction>>();
 
-        // This will get number of bytes we should replace
+        // This will get number of instructions we should replace
         let num = instrs
             .iter()
             .filter_map(|i| {
@@ -142,18 +145,60 @@ impl<T> RawHook<T> {
         let bytes = [trampoline, original].concat();
 
         // TODO: safety docs
-        unsafe { self.trampoline.as_mut_ptr::<Vec<u8>>().write(bytes.clone()) };
+        unsafe { self.trampoline.as_mut_ptr::<&[u8]>().write(&bytes) };
 
-        for instr in Decoder::with_ip(
-            Self::INSTRUCTION_BITNESS,
-            &bytes,
-            self.trampoline.as_ptr::<()>() as u64,
-            DecoderOptions::NONE,
-        ) {
-            println!("{}", instr);
+        let mut asm = CodeAssembler::new(Self::INSTRUCTION_BITNESS)?;
+
+        // We guarantee this is within 2GB of the original code, so this is ok.
+        asm.jmp(self.trampoline.as_ptr::<()>() as u64)?;
+        asm.nops_with_size(self.prev_instr.iter().map(|i| i.len()).sum::<usize>() - 5usize)?;
+
+        let target = asm.assemble(self.target as u64)?;
+
+        // SAFETY: This will be set back to its original protection when dropped, and
+        // since we assume all threads are suspended when hooking, this is fine.
+        let _guard = unsafe {
+            region::protect_with_handle(
+                self.target,
+                Self::INSTRUCTION_MAX_SIZE,
+                Protection::READ_WRITE_EXECUTE,
+            )?
+        };
+
+        // TODO: Safety docs
+        unsafe { self.target.cast::<&[u8]>().cast_mut().write(&target) }
+
+        let dec = unsafe {
+            Decoder::with_ip(
+                Self::INSTRUCTION_BITNESS,
+                slice::from_raw_parts(self.target.cast(), Self::INSTRUCTION_MAX_SIZE),
+                self.target as u64,
+                DecoderOptions::NONE,
+            )
+        };
+
+        for i in dec {
+            println!("{i}");
         }
 
-        todo!();
+        println!("(end)");
+
+        let dec = unsafe {
+            Decoder::with_ip(
+                Self::INSTRUCTION_BITNESS,
+                slice::from_raw_parts(self.trampoline.as_ptr(), 100),
+                self.trampoline.as_ptr::<()>() as u64,
+                DecoderOptions::NONE,
+            )
+        };
+
+        for i in dec {
+            println!("{i}");
+        }
+
+        println!("{BYTES:?}");
+
+        Ok(())
     }
 }
 
@@ -168,6 +213,8 @@ mod tests {
 
     #[test]
     fn a() {
+        println!("{BYTES:?}");
+
         unsafe {
             panic!(
                 "{}",
