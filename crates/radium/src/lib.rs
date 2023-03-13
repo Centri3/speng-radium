@@ -5,29 +5,20 @@ mod workshop;
 
 use crate::utils::logging;
 use crate::utils::logging::SetupFile;
-use crate::workshop::WorkshopItem;
-use eyre::eyre;
+use dll_syringe::process::OwnedProcess;
 use eyre::Result;
+use if_chain::if_chain;
 use path_clean::PathClean;
-use std::collections::HashMap;
-use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 use std::thread::Builder;
-use steamworks_sys::ISteamUGC;
-use steamworks_sys::SteamAPI_ISteamUGC_GetItemInstallInfo;
-use steamworks_sys::SteamAPI_ISteamUGC_GetNumSubscribedItems;
-use steamworks_sys::SteamAPI_ISteamUGC_GetSubscribedItems;
-use steamworks_sys::SteamAPI_Init;
-use steamworks_sys::SteamAPI_RestartAppIfNecessary;
-use steamworks_sys::SteamAPI_Shutdown;
-use steamworks_sys::SteamAPI_SteamUGC_v016;
-use tracing::debug;
 use tracing::info;
 use tracing::trace_span;
 use tracing_appender::non_blocking::WorkerGuard;
+use walkdir::WalkDir;
 use windows::Win32::Foundation::HINSTANCE;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::System::Threading::OpenThread;
 use windows::Win32::System::Threading::ResumeThread;
 use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
@@ -60,38 +51,6 @@ fn __attach() -> Result<WorkerGuard> {
 
     info!("I have been loaded by SE");
 
-    unsafe {
-        SteamAPI_RestartAppIfNecessary(314650u32);
-        SteamAPI_Init();
-    }
-
-    info!("Initialized Steam API");
-
-    let ugc = unsafe { SteamAPI_SteamUGC_v016() };
-    let mut items = __get_workshop_items(ugc)?;
-    let addons = __get_workshop_items_addons()?;
-
-    info!("Found subscribed workshop items");
-
-    for (_, item) in items.iter() {
-        debug!(item.id, ?item.path)
-    }
-
-    // Remove disabled addons
-    for addon in addons.iter() {
-        if !addon.enabled.unwrap() && items.get(&addon.id).is_some() {
-            items.remove(&addon.id).unwrap();
-        }
-    }
-
-    info!("Disabled items based on `addons.cfg`");
-
-    for (_, item) in items.iter() {
-        debug!(item.id, ?item.path)
-    }
-
-    unsafe { SteamAPI_Shutdown() };
-
     // Resume the main thread of SE
     unsafe {
         assert_ne!(
@@ -107,101 +66,24 @@ fn __attach() -> Result<WorkerGuard> {
     // Clean up
     fs::remove_file("mainthread")?;
 
-    std::thread::sleep(std::time::Duration::from_secs(10000));
+    info!("Finding mod dlls");
+
+    let mut dlls = vec![];
+
+    for entry in WalkDir::new(Path::new("../mods").clean()) {
+        let entry = entry.unwrap();
+        let path = entry.path();
+
+        if_chain! {
+            if path.is_file();
+            if let Some(extension) = path.extension();
+            if extension == "dll";
+
+            then { dlls.push(path.to_owned()); }
+        }
+    }
+
+    let target = OwnedProcess::from_pid(unsafe { GetCurrentProcessId() })?;
 
     Ok(guard)
-}
-
-#[inline(always)]
-fn __get_workshop_items(ugc: *mut ISteamUGC) -> Result<HashMap<u64, WorkshopItem>> {
-    let num_of_items = unsafe { SteamAPI_ISteamUGC_GetNumSubscribedItems(ugc) };
-    let mut item_ids = vec![0u64; num_of_items as usize];
-
-    // This will get the id of every item the user's subscribed to
-    unsafe { SteamAPI_ISteamUGC_GetSubscribedItems(ugc, item_ids.as_mut_ptr(), num_of_items) };
-
-    let mut items = HashMap::with_capacity(num_of_items as usize);
-
-    for item_id in item_ids {
-        let mut path = [0u8; 1024usize];
-
-        unsafe {
-            SteamAPI_ISteamUGC_GetItemInstallInfo(
-                ugc,
-                item_id,
-                &mut 0u64,
-                path.as_mut_ptr().cast(),
-                path.len() as u32,
-                &mut 0u32,
-            );
-        }
-
-        assert!(items
-            .insert(
-                item_id,
-                WorkshopItem {
-                    path: PathBuf::from(String::from_utf8(path.to_vec())?.replace('\0', "")),
-                    id: item_id,
-                    enabled: None,
-                },
-            )
-            .is_none());
-    }
-
-    Ok(items)
-}
-
-// TODO: This is both disgusting and will fail if either Id or Enabled are
-// within Path. FIX LATER.
-#[inline(always)]
-fn __get_workshop_items_addons() -> Result<Vec<WorkshopItem>> {
-    let addons = fs::read_to_string(env::current_dir()?.join("../config/addons.cfg").clean())?;
-    let mut items = vec![];
-
-    for (path_indice, _) in addons.match_indices("Path") {
-        let id_indice = path_indice
-            + addons[path_indice..]
-                .find("Id")
-                .ok_or_else(|| eyre!("Missing `Id` field on addon"))?;
-
-        let enabled_indice = id_indice
-            + addons[id_indice..]
-                .find("Enabled")
-                .ok_or_else(|| eyre!("Missing `Enabled` field on addon"))?;
-
-        let path_start = path_indice
-            + addons[path_indice..]
-                .find('"')
-                .ok_or_else(|| eyre!("Unexpectedly got `None`"))?;
-
-        let path = addons[path_start..]
-            .split_once('\n')
-            .ok_or_else(|| eyre!("Unexpectedly got `None`"))?
-            .0
-            .replace('"', "");
-
-        let id = addons[id_indice..]
-            .split_whitespace()
-            .nth(1usize)
-            .ok_or_else(|| eyre!("Unexpectedly got `None`"))?
-            .parse::<u64>()?;
-
-        let enabled = match addons[enabled_indice..]
-            .split_whitespace()
-            .nth(1usize)
-            .ok_or_else(|| eyre!("Unexpectedly got `None`"))?
-        {
-            "true" => Ok(true),
-            "false" => Ok(false),
-            _ => Err(eyre!("Field `Enabled` was not bool")),
-        }?;
-
-        items.push(WorkshopItem {
-            path: PathBuf::from(path),
-            id,
-            enabled: Some(enabled),
-        })
-    }
-
-    Ok(items)
 }

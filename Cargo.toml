@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/radium", "crates/radium-hooking"]
+members = ["crates/radium", "crates/radium-api"]
 
 # Better performance with color-eyre
 [profile.dev.package.backtrace]
