@@ -82,5 +82,6 @@ rustflags = [
 
     "-Dunsafe_op_in_unsafe_fn",
     "-Aclippy::map_err_ignore",
+    "-Aclippy::string_lit_as_bytes",
     "-Aunsafe_code",
 ]

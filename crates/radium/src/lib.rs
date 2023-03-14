@@ -9,6 +9,10 @@ use dll_syringe::process::OwnedProcess;
 use eyre::Result;
 use if_chain::if_chain;
 use path_clean::PathClean;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::LibraryLoader::GetProcAddress;
+use windows::s;
+use windows::w;
 use std::fs;
 use std::path::Path;
 use std::thread::Builder;
@@ -22,6 +26,9 @@ use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::System::Threading::OpenThread;
 use windows::Win32::System::Threading::ResumeThread;
 use windows::Win32::System::Threading::THREAD_SUSPEND_RESUME;
+use retour::static_detour;
+
+
 
 #[no_mangle]
 unsafe extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: usize) -> bool {
@@ -83,7 +90,13 @@ fn __attach() -> Result<WorkerGuard> {
         }
     }
 
-    let target = OwnedProcess::from_pid(unsafe { GetCurrentProcessId() })?;
+    let x = unsafe { GetProcAddress(GetModuleHandleW(w!("OPENGL32.dll"))?, s!("wglSwapBuffers")).unwrap() };
+
+    info!("{:?}", x as *const ());
+
+    // let target = OwnedProcess::from_pid(unsafe { GetCurrentProcessId() })?;
+
+    
 
     Ok(guard)
 }
