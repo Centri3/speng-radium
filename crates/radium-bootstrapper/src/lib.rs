@@ -1,7 +1,14 @@
 mod utils;
 
 use std::ffi::c_void;
+use std::iter::once;
+use std::thread;
 use windows::s;
+use windows::w;
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::MessageBoxW;
+use windows::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION;
+use windows::Win32::UI::WindowsAndMessaging::MB_OK;
 use windows_sys::core::PCSTR;
 use windows_sys::core::PCWSTR;
 use windows_sys::core::PSTR;
@@ -46,8 +53,21 @@ lazy_export! {
     fn VerQueryValueW(a: *const c_void, b: PCWSTR, c: *mut *mut c_void, d: *mut u32) -> i32;
 }
 
+fn main() {
+    unsafe {
+        MessageBoxW(
+            HWND(0isize),
+            w!("yeaaaaaaaaaaaaaaaaaah"),
+            w!("trans rights!"),
+            MB_OK | MB_ICONINFORMATION,
+        )
+    };
+}
+
 pub extern "system" fn DllMain(_: *mut u8, call_reason: i32, _: *mut u8) -> bool {
-    if call_reason == 1 {}
+    if call_reason == 1 {
+        thread::spawn(main);
+    }
 
     true
 }
