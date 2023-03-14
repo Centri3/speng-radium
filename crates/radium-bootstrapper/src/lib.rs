@@ -6,6 +6,7 @@ use std::thread;
 use windows::s;
 use windows::w;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows::Win32::UI::WindowsAndMessaging::MessageBoxW;
 use windows::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION;
 use windows::Win32::UI::WindowsAndMessaging::MB_OK;
@@ -14,22 +15,6 @@ use windows_sys::core::PCWSTR;
 use windows_sys::core::PSTR;
 use windows_sys::core::PWSTR;
 use windows_sys::Win32::Foundation::HINSTANCE;
-use windows_sys::Win32::Storage::FileSystem::GetFileVersionInfoA;
-use windows_sys::Win32::Storage::FileSystem::GetFileVersionInfoExA;
-use windows_sys::Win32::Storage::FileSystem::GetFileVersionInfoExW;
-use windows_sys::Win32::Storage::FileSystem::GetFileVersionInfoSizeA;
-use windows_sys::Win32::Storage::FileSystem::GetFileVersionInfoSizeExA;
-use windows_sys::Win32::Storage::FileSystem::GetFileVersionInfoSizeExW;
-use windows_sys::Win32::Storage::FileSystem::GetFileVersionInfoSizeW;
-use windows_sys::Win32::Storage::FileSystem::GetFileVersionInfoW;
-use windows_sys::Win32::Storage::FileSystem::VerFindFileA;
-use windows_sys::Win32::Storage::FileSystem::VerFindFileW;
-use windows_sys::Win32::Storage::FileSystem::VerInstallFileA;
-use windows_sys::Win32::Storage::FileSystem::VerInstallFileW;
-use windows_sys::Win32::Storage::FileSystem::VerLanguageNameA;
-use windows_sys::Win32::Storage::FileSystem::VerLanguageNameW;
-use windows_sys::Win32::Storage::FileSystem::VerQueryValueA;
-use windows_sys::Win32::Storage::FileSystem::VerQueryValueW;
 use windows_sys::Win32::Storage::FileSystem::GET_FILE_VERSION_INFO_FLAGS;
 use windows_sys::Win32::Storage::FileSystem::VER_FIND_FILE_FLAGS;
 use windows_sys::Win32::Storage::FileSystem::VER_FIND_FILE_STATUS;
@@ -64,8 +49,9 @@ fn main() {
     };
 }
 
-pub extern "system" fn DllMain(_: *mut u8, call_reason: i32, _: *mut u8) -> bool {
-    if call_reason == 1 {
+#[no_mangle]
+pub extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: usize) -> bool {
+    if reason == DLL_PROCESS_ATTACH {
         thread::spawn(main);
     }
 
